@@ -1,9 +1,9 @@
 package ackhandler
 
 import (
-	"github.com/quic-go/quic-go/internal/monotime"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/wire"
+	"github.com/daeuniverse/quic-go/internal/monotime"
+	"github.com/daeuniverse/quic-go/internal/protocol"
+	"github.com/daeuniverse/quic-go/internal/wire"
 )
 
 // SentPacketHandler handles ACKs received for outgoing packets

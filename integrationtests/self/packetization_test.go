@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	quicproxy "github.com/quic-go/quic-go/integrationtests/tools/proxy"
-	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/qlog"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/daeuniverse/quic-go"
+	quicproxy "github.com/daeuniverse/quic-go/integrationtests/tools/proxy"
+	"github.com/daeuniverse/quic-go/internal/protocol"
+	"github.com/daeuniverse/quic-go/qlog"
+	"github.com/daeuniverse/quic-go/qlogwriter"
+	"github.com/daeuniverse/quic-go/quicvarint"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

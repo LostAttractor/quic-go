@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
-	quicproxy "github.com/quic-go/quic-go/integrationtests/tools/proxy"
+	"github.com/daeuniverse/quic-go"
+	"github.com/daeuniverse/quic-go/http3"
+	quicproxy "github.com/daeuniverse/quic-go/integrationtests/tools/proxy"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

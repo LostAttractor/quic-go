@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/quic-go/quic-go/qlogwriter/jsontext"
+	"github.com/daeuniverse/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
 )

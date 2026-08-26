@@ -59,7 +59,7 @@ func TestRequestHeaderParsing(t *testing.T) {
 		scheme string
 	}{
 		{name: "regular path", path: "/foo", scheme: "https"},
-		// see https://github.com/quic-go/quic-go/pull/1898
+		// see https://github.com/daeuniverse/quic-go/pull/1898
 		{name: "path starting with //", path: "//foo", scheme: "https"},
 		{name: "upper-case scheme", path: "/foo", scheme: "HTTPS"},
 	} {
