@@ -36,7 +36,8 @@ func setDF(rawConn syscall.RawConn) (bool, error) {
 	case errDFIPv4 != nil && errDFIPv6 == nil:
 		utils.DefaultLogger.Debugf("Setting DF for IPv6.")
 	case errDFIPv4 != nil && errDFIPv6 != nil:
-		return false, errors.New("setting DF failed for both IPv4 and IPv6")
+		utils.DefaultLogger.Debugf("Setting DF failed for both IPv4 and IPv6.")
+		return false, nil
 	}
 	return true, nil
 }
