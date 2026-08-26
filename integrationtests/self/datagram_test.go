@@ -132,6 +132,11 @@ func TestDatagramSizeLimit(t *testing.T) {
 }
 
 func TestDatagramSizeLimitWithMTUDiscovery(t *testing.T) {
+	// this fork limits the advertised max DATAGRAM frame size to 1200 bytes,
+	// use the upstream default for this test
+	defer func(orig protocol.ByteCount) { wire.MaxDatagramSize = orig }(wire.MaxDatagramSize)
+	wire.MaxDatagramSize = 16383
+
 	server, err := quic.Listen(
 		newUDPConnLocalhost(t),
 		getTLSConfig(),

@@ -13,6 +13,7 @@ import (
 	"github.com/daeuniverse/quic-go"
 	quicproxy "github.com/daeuniverse/quic-go/integrationtests/tools/proxy"
 	"github.com/daeuniverse/quic-go/internal/protocol"
+	"github.com/daeuniverse/quic-go/internal/wire"
 	"github.com/daeuniverse/quic-go/qlog"
 	"github.com/daeuniverse/quic-go/testutils/events"
 
@@ -43,6 +44,11 @@ func TestInitialPacketSize(t *testing.T) {
 }
 
 func TestPathMTUDiscovery(t *testing.T) {
+	// this fork limits the advertised max DATAGRAM frame size to 1200 bytes,
+	// use the upstream default for this test
+	defer func(orig protocol.ByteCount) { wire.MaxDatagramSize = orig }(wire.MaxDatagramSize)
+	wire.MaxDatagramSize = 16383
+
 	rtt := scaleDuration(5 * time.Millisecond)
 	const mtu = 1400
 
