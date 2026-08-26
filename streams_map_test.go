@@ -52,6 +52,7 @@ func testStreamsMapCreatingStreams(t *testing.T,
 		1,
 		1,
 		perspective,
+		nil,
 	)
 	m.HandleTransportParameters(&wire.TransportParameters{
 		MaxBidiStreamNum: protocol.MaxStreamCount,
@@ -125,6 +126,7 @@ func testStreamsMapDeletingStreams(t *testing.T,
 		100,
 		100,
 		perspective,
+		nil,
 	)
 	m.HandleTransportParameters(&wire.TransportParameters{
 		MaxBidiStreamNum: 10,
@@ -208,6 +210,7 @@ func testStreamsMapStreamLimits(t *testing.T, perspective protocol.Perspective) 
 		100,
 		100,
 		perspective,
+		nil,
 	)
 
 	// increase via transport parameters
@@ -301,6 +304,7 @@ func testStreamsMapHandleReceiveStreamFrames(t *testing.T, pers protocol.Perspec
 		100,
 		100,
 		pers,
+		nil,
 	)
 	m.HandleMaxStreamsFrame(&wire.MaxStreamsFrame{Type: protocol.StreamTypeBidi, MaxStreamNum: protocol.MaxStreamCount})
 	m.HandleMaxStreamsFrame(&wire.MaxStreamsFrame{Type: protocol.StreamTypeUni, MaxStreamNum: protocol.MaxStreamCount})
@@ -412,6 +416,7 @@ func testStreamsMapHandleSendStreamFrames(t *testing.T, pers protocol.Perspectiv
 		100,
 		100,
 		pers,
+		nil,
 	)
 	m.HandleMaxStreamsFrame(&wire.MaxStreamsFrame{Type: protocol.StreamTypeBidi, MaxStreamNum: protocol.MaxStreamCount})
 	m.HandleMaxStreamsFrame(&wire.MaxStreamsFrame{Type: protocol.StreamTypeUni, MaxStreamNum: protocol.MaxStreamCount})
@@ -492,6 +497,7 @@ func TestStreamsMapClosing(t *testing.T) {
 		1,
 		1,
 		protocol.PerspectiveClient,
+		nil,
 	)
 	m.CloseWithError(assert.AnError)
 	_, err := m.OpenStream()
@@ -520,6 +526,7 @@ func TestStreamsMap0RTT(t *testing.T) {
 		1,
 		1,
 		protocol.PerspectiveClient,
+		nil,
 	)
 	// restored transport parameters
 	m.HandleTransportParameters(&wire.TransportParameters{
@@ -559,6 +566,7 @@ func TestStreamsMap0RTTResetStreamAt(t *testing.T) {
 				1,
 				1,
 				protocol.PerspectiveClient,
+				nil,
 			)
 			m.HandleTransportParameters(&wire.TransportParameters{MaxBidiStreamNum: 1, MaxUniStreamNum: 1})
 			str, err := m.OpenStream()
@@ -584,6 +592,7 @@ func TestStreamsMap0RTTRejection(t *testing.T) {
 		1,
 		1,
 		protocol.PerspectiveClient,
+		nil,
 	)
 
 	m.ResetFor0RTT()
@@ -628,6 +637,7 @@ func testStreamsMap0RTTRejectionResetStreamAt(t *testing.T, enabled bool) {
 		2,
 		1,
 		protocol.PerspectiveClient,
+		nil,
 	)
 	m.HandleTransportParameters(&wire.TransportParameters{EnableResetStreamAt: true})
 	m.ResetFor0RTT()

@@ -25,9 +25,10 @@ type outgoingStreamsMap[T outgoingStream] struct {
 
 	openQueue []chan struct{}
 
-	nextStream  protocol.StreamID // stream ID of the stream returned by OpenStream(Sync)
-	maxStream   protocol.StreamID // the maximum stream ID we're allowed to open
-	blockedSent bool              // was a STREAMS_BLOCKED sent for the current maxStream
+	nextStream         protocol.StreamID // stream ID of the stream returned by OpenStream(Sync)
+	maxStream          protocol.StreamID // the maximum stream ID we're allowed to open
+	blockedSent        bool              // was a STREAMS_BLOCKED sent for the current maxStream
+	capabilityCallback func(n int64)
 
 	newStream            func(protocol.StreamID) T
 	queueStreamIDBlocked func(*wire.StreamsBlockedFrame)
@@ -40,7 +41,11 @@ func newOutgoingStreamsMap[T outgoingStream](
 	newStream func(protocol.StreamID) T,
 	queueControlFrame func(wire.Frame),
 	pers protocol.Perspective,
+	capabilityCallback func(n int64),
 ) *outgoingStreamsMap[T] {
+	if capabilityCallback == nil {
+		capabilityCallback = func(n int64) {}
+	}
 	var nextStream protocol.StreamID
 	switch {
 	case streamType == protocol.StreamTypeBidi && pers == protocol.PerspectiveServer:
@@ -59,6 +64,7 @@ func newOutgoingStreamsMap[T outgoingStream](
 		nextStream:           nextStream,
 		newStream:            newStream,
 		queueStreamIDBlocked: func(f *wire.StreamsBlockedFrame) { queueControlFrame(f) },
+		capabilityCallback:   capabilityCallback,
 	}
 }
 
@@ -137,6 +143,7 @@ func (m *outgoingStreamsMap[T]) openStream() T {
 	s := m.newStream(m.nextStream)
 	m.streams[m.nextStream] = s
 	m.nextStream += 4
+	m.capabilityCallback(int64(m.maxStream.StreamNum() - m.nextStream.StreamNum()))
 	return s
 }
 
@@ -194,6 +201,7 @@ func (m *outgoingStreamsMap[T]) SetMaxStream(id protocol.StreamID) {
 		return
 	}
 	m.maxStream = id
+	m.capabilityCallback(int64(m.maxStream.StreamNum() - m.nextStream.StreamNum()))
 	m.blockedSent = false
 	if m.maxStream < m.nextStream-4+4*protocol.StreamID(len(m.openQueue)) {
 		m.maybeSendBlockedFrame()

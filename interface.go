@@ -183,6 +183,10 @@ type Config struct {
 	EnableStreamResetPartialDelivery bool
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
+
+	// CapabilityCallback is called whenever the number of streams that can
+	// still be opened on this connection changes.
+	CapabilityCallback func(n int64)
 }
 
 // ClientInfo contains information about an incoming connection attempt.

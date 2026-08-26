@@ -34,6 +34,7 @@ type streamsMap struct {
 	outgoingUniStreams    *outgoingStreamsMap[*SendStream]
 	incomingBidiStreams   *incomingStreamsMap[*Stream]
 	incomingUniStreams    *incomingStreamsMap[*ReceiveStream]
+	capabilityCallback    func(n int64)
 	reset                 bool
 	supportsResetStreamAt bool
 }
@@ -46,6 +47,7 @@ func newStreamsMap(
 	maxIncomingBidiStreams uint64,
 	maxIncomingUniStreams uint64,
 	perspective protocol.Perspective,
+	capabilityCallback func(n int64),
 ) *streamsMap {
 	m := &streamsMap{
 		ctx:                    ctx,
@@ -55,6 +57,7 @@ func newStreamsMap(
 		maxIncomingBidiStreams: maxIncomingBidiStreams,
 		maxIncomingUniStreams:  maxIncomingUniStreams,
 		sender:                 sender,
+		capabilityCallback:     capabilityCallback,
 	}
 	m.initMaps()
 	return m
@@ -68,6 +71,7 @@ func (m *streamsMap) initMaps() {
 		},
 		m.queueControlFrame,
 		m.perspective,
+		m.capabilityCallback,
 	)
 	m.incomingBidiStreams = newIncomingStreamsMap(
 		protocol.StreamTypeBidi,
@@ -85,6 +89,7 @@ func (m *streamsMap) initMaps() {
 		},
 		m.queueControlFrame,
 		m.perspective,
+		m.capabilityCallback,
 	)
 	m.incomingUniStreams = newIncomingStreamsMap(
 		protocol.StreamTypeUni,
