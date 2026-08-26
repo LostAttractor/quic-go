@@ -32,6 +32,7 @@ func testStreamsMapOutgoingOpenAndDelete(t *testing.T, perspective protocol.Pers
 		func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 		func(f wire.Frame) {},
 		perspective,
+		nil,
 	)
 	m.SetMaxStream(protocol.MaxStreamID)
 
@@ -92,6 +93,7 @@ func testStreamsMapOutgoingLimits(t *testing.T, perspective protocol.Perspective
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) {},
 			perspective,
+			nil,
 		)
 		m.SetMaxStream(firstStream)
 
@@ -166,6 +168,7 @@ func TestStreamsMapOutgoingOpenStreamSyncCancel(t *testing.T) {
 		func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 		func(f wire.Frame) { queued <- struct{}{} },
 		protocol.PerspectiveClient,
+		nil,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -208,6 +211,7 @@ func TestStreamsMapOutgoingConcurrentOpenStreamSync(t *testing.T) {
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) {},
 			protocol.PerspectiveClient,
+			nil,
 		)
 
 		type result struct {
@@ -265,6 +269,7 @@ func TestStreamsMapOutgoingClosing(t *testing.T) {
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) {},
 			protocol.PerspectiveServer,
+			nil,
 		)
 
 		m.SetMaxStream(protocol.FirstOutgoingUniStreamServer + 4)
@@ -306,6 +311,7 @@ func TestStreamsMapOutgoingBlockedFrames(t *testing.T) {
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) { frameQueue = append(frameQueue, f) },
 			protocol.PerspectiveClient,
+			nil,
 		)
 
 		m.SetMaxStream(protocol.FirstOutgoingBidiStreamClient + 8)
@@ -384,6 +390,7 @@ func TestStreamsMapOutgoingRandomizedOpenStreamSync(t *testing.T) {
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) { frameQueue <- f },
 			protocol.PerspectiveServer,
+			nil,
 		)
 
 		type result struct {
@@ -474,6 +481,7 @@ func TestStreamsMapOutgoingRandomizedWithCancellation(t *testing.T) {
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) { frameQueue <- f },
 			protocol.PerspectiveClient,
+			nil,
 		)
 
 		type result struct {
@@ -587,6 +595,7 @@ func testStreamsMapConcurrent(t *testing.T) {
 			func(id protocol.StreamID) *mockStream { return &mockStream{id: id} },
 			func(f wire.Frame) {},
 			protocol.PerspectiveClient,
+			nil,
 		)
 
 		const num = 100

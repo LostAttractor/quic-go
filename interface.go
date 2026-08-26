@@ -16,6 +16,14 @@ import (
 // The StreamID is the ID of a QUIC stream.
 type StreamID = protocol.StreamID
 
+// StreamType distinguishes the two independent outgoing stream limits.
+type StreamType = protocol.StreamType
+
+const (
+	StreamTypeUni  = protocol.StreamTypeUni
+	StreamTypeBidi = protocol.StreamTypeBidi
+)
+
 // A Version is a QUIC version number.
 type Version = protocol.Version
 
@@ -183,6 +191,12 @@ type Config struct {
 	EnableStreamResetPartialDelivery bool
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
+
+	// CapabilityCallback reports how many streams of the given type can still
+	// be opened. Each type initially reports zero, before peer limits arrive.
+	// It runs synchronously under the stream map lock and must not block or
+	// call back into the connection. Different stream types may report concurrently.
+	CapabilityCallback func(streamType StreamType, available int64)
 }
 
 // ClientInfo contains information about an incoming connection attempt.
