@@ -554,6 +554,7 @@ func (c *Conn) preSetup(r *pathReceiver) {
 		uint64(c.config.MaxIncomingUniStreams),
 		c.config.RequireStreamCreditRelease,
 		c.perspective,
+		c.config.CapabilityCallback,
 	)
 	c.framer = newFramer(c.connFlowController)
 	c.receivedPackets.Init(r)
