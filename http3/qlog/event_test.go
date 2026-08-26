@@ -8,9 +8,9 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlogwriter"
-	"github.com/quic-go/quic-go/qlogwriter/jsontext"
+	"github.com/daeuniverse/quic-go"
+	"github.com/daeuniverse/quic-go/qlogwriter"
+	"github.com/daeuniverse/quic-go/qlogwriter/jsontext"
 
 	"github.com/stretchr/testify/require"
 )
