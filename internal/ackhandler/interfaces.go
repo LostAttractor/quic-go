@@ -1,6 +1,7 @@
 package ackhandler
 
 import (
+	"github.com/daeuniverse/quic-go/congestion"
 	"github.com/daeuniverse/quic-go/internal/monotime"
 	"github.com/daeuniverse/quic-go/internal/protocol"
 	"github.com/daeuniverse/quic-go/internal/wire"
@@ -36,4 +37,6 @@ type SentPacketHandler interface {
 	OnLossDetectionTimeout(now monotime.Time) error
 
 	MigratedPath(now monotime.Time, initialMaxPacketSize protocol.ByteCount)
+
+	SetCongestionControl(congestion.CongestionControl)
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/daeuniverse/quic-go/congestion"
 	"github.com/daeuniverse/quic-go/internal/ackhandler"
 	"github.com/daeuniverse/quic-go/internal/handshake"
 	"github.com/daeuniverse/quic-go/internal/monotime"
@@ -3081,6 +3082,11 @@ func (c *Conn) SendDatagram(p []byte) error {
 	f.Data = make([]byte, len(p))
 	copy(f.Data, p)
 	return c.datagramQueue.Add(f)
+}
+
+// SetCongestionControl replaces the current congestion control algorithm with a new one.
+func (c *Conn) SetCongestionControl(cc congestion.CongestionControl) {
+	c.sentPacketHandler.SetCongestionControl(cc)
 }
 
 // ReceiveDatagram gets a message received in a QUIC datagram, as specified in RFC 9221.
