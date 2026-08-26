@@ -1,6 +1,9 @@
 package congestion
 
 import (
+	"time"
+
+	"github.com/daeuniverse/quic-go/congestion"
 	"github.com/daeuniverse/quic-go/internal/monotime"
 	"github.com/daeuniverse/quic-go/internal/protocol"
 )
@@ -17,6 +20,13 @@ type SendAlgorithm interface {
 	OnSpuriousLoss(number protocol.PacketNumber)
 	OnRetransmissionTimeout(packetsRetransmitted bool)
 	SetMaxDatagramSize(protocol.ByteCount)
+}
+
+// A SendAlgorithmEx is a SendAlgorithm that additionally receives
+// detailed information about acked and lost packets on congestion events.
+type SendAlgorithmEx interface {
+	SendAlgorithm
+	OnCongestionEventEx(priorInFlight protocol.ByteCount, eventTime time.Time, ackedPackets []congestion.AckedPacketInfo, lostPackets []congestion.LostPacketInfo)
 }
 
 // A SendAlgorithmWithDebugInfos is a SendAlgorithm that exposes some debug infos

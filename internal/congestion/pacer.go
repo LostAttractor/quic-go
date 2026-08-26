@@ -4,6 +4,7 @@ import (
 	"math"
 	"time"
 
+	congestionExt "github.com/daeuniverse/quic-go/congestion"
 	"github.com/daeuniverse/quic-go/internal/monotime"
 	"github.com/daeuniverse/quic-go/internal/protocol"
 )
@@ -13,7 +14,7 @@ const maxBurstSizePackets = 10
 // minPacingDelay is the minimum duration that is used for packet pacing
 // If the packet packing frequency is higher, multiple packets might be sent at once.
 // Example: For a packet pacing delay of 200μs, we would send 5 packets at once, wait for 1ms, and so forth.
-const minPacingDelay = time.Millisecond
+const minPacingDelay = congestionExt.MinPacingDelay
 
 // The pacer implements a token bucket pacing algorithm.
 type pacer struct {
