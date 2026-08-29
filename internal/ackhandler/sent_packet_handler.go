@@ -144,6 +144,14 @@ type sentPacketHandler struct {
 
 var _ SentPacketHandler = &sentPacketHandler{}
 
+func resetCongestionEventPacketInfo[T any](packets []T) []T {
+	if cap(packets) > protocol.MaxNumAckRanges {
+		return nil
+	}
+	clear(packets)
+	return packets[:0]
+}
+
 // clientAddressValidated indicates whether the address was validated beforehand by an address validation token.
 // If the address was validated, the amplification limit doesn't apply. It has no effect for a client.
 func NewSentPacketHandler(
@@ -546,10 +554,12 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 
 	if cex, ok := cc.(congestion.SendAlgorithmEx); ok &&
 		(len(h.ackedPacketsInfo) != 0 || len(h.lostPacketsInfo) != 0) {
-		cex.OnCongestionEventEx(priorInFlight, rcvTime.ToTime(), h.ackedPacketsInfo, h.lostPacketsInfo)
+		ackedPackets := h.ackedPacketsInfo[:len(h.ackedPacketsInfo):len(h.ackedPacketsInfo)]
+		lostPackets := h.lostPacketsInfo[:len(h.lostPacketsInfo):len(h.lostPacketsInfo)]
+		cex.OnCongestionEventEx(priorInFlight, rcvTime.ToTime(), ackedPackets, lostPackets)
 	}
-	h.ackedPacketsInfo = nil //nolint:ineffassign // This is just to be on the safe side.
-	h.lostPacketsInfo = nil  //nolint:ineffassign // This is just to be on the safe side.
+	h.ackedPacketsInfo = resetCongestionEventPacketInfo(h.ackedPacketsInfo)
+	h.lostPacketsInfo = resetCongestionEventPacketInfo(h.lostPacketsInfo)
 
 	// After this point, we must not use ackedPackets any longer!
 	// We've already returned the buffers.
