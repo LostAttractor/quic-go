@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   coverage:
+    # The corpus bucket and its credentials belong to the upstream project.
+    if: github.repository == 'quic-go/quic-go'
     runs-on: ubuntu-latest
     env:
       DOCKER_DEFAULT_PLATFORM: linux/amd64
