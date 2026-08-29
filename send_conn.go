@@ -35,7 +35,7 @@ type sconn struct {
 	logger utils.Logger
 
 	// If GSO enabled, and we receive a GSO error for this remote address, GSO is disabled.
-	gotGSOError bool
+	gotGSOError atomic.Bool
 	// Used to catch the error sometimes returned by the first sendmsg call on Linux,
 	// see https://github.com/golang/go/issues/63322.
 	wroteFirstPacket bool
@@ -72,19 +72,21 @@ func newSendConn(c rawConn, remote net.Addr, info packetInfo, logger utils.Logge
 func (c *sconn) Write(p []byte, gsoSize uint16, ecn protocol.ECN) error {
 	ai := c.remoteAddrInfo.Load()
 	err := c.writePacket(p, ai.addr, ai.oob, gsoSize, ecn)
-	if err != nil && isGSOError(err) {
-		// disable GSO for future calls
-		c.gotGSOError = true
-		if c.logger.Debug() {
-			c.logger.Debugf("GSO failed when sending to %s", ai.addr)
-		}
+	if err != nil && gsoSize > 0 && isGSOError(err) {
 		// send out the packets one by one
 		for len(p) > 0 {
 			l := min(len(p), int(gsoSize))
 			if err := c.writePacket(p[:l], ai.addr, ai.oob, 0, ecn); err != nil {
+				// The segments fail without GSO too, e.g. above the device MTU after
+				// a route change: GSO was not the cause, so keep it.
 				return err
 			}
 			p = p[l:]
+		}
+		// disable GSO for future calls
+		c.gotGSOError.Store(true)
+		if c.logger.Debug() {
+			c.logger.Debugf("GSO failed when sending to %s", ai.addr)
 		}
 		return nil
 	}
@@ -108,7 +110,7 @@ func (c *sconn) WriteTo(b []byte, addr net.Addr, info packetInfo) error {
 func (c *sconn) capabilities() connCapabilities {
 	capabilities := c.rawConn.capabilities()
 	if capabilities.GSO {
-		capabilities.GSO = !c.gotGSOError
+		capabilities.GSO = !c.gotGSOError.Load()
 	}
 	return capabilities
 }
