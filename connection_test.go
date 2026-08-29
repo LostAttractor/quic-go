@@ -2391,8 +2391,8 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 				},
 			))
 		}
-		// The smaller (fourth) packet concluded this GSO batch, but the send loop will immediately start composing the next batch.
-		// We therefore send a "foobar", so we can check that we're actually generating two GSO batches.
+		// The ECN change concluded this GSO batch, but the send loop will immediately start composing the next batch.
+		// Send a short standalone packet with the new ECN marking.
 		calls = append(calls,
 			tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 				func(buffer *packetBuffer, count protocol.ByteCount, t monotime.Time, version protocol.Version) (shortHeaderPacket, error) {
@@ -2408,7 +2408,7 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 
 		done3 := make(chan struct{})
 		tc.sendConn.EXPECT().Write(expectedData, uint16(maxPacketSize), protocol.ECT1)
-		tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(maxPacketSize), protocol.ECNCE).DoAndReturn(
+		tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(0), protocol.ECNCE).DoAndReturn(
 			func([]byte, uint16, protocol.ECN) error { close(done3); return nil },
 		)
 
