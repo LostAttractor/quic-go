@@ -42,6 +42,9 @@ type CongestionControl interface {
 	MaybeExitSlowStart()
 	OnPacketAcked(number PacketNumber, ackedBytes ByteCount, priorInFlight ByteCount, eventTime time.Time)
 	OnCongestionEvent(number PacketNumber, lostBytes ByteCount, priorInFlight ByteCount)
+	// ackedPackets and lostPackets are read-only borrowed slices, sorted by increasing packet number.
+	// They are valid only until OnCongestionEventEx returns and must be copied before being retained
+	// or used asynchronously.
 	OnCongestionEventEx(priorInFlight ByteCount, eventTime time.Time, ackedPackets []AckedPacketInfo, lostPackets []LostPacketInfo)
 	OnRetransmissionTimeout(packetsRetransmitted bool)
 	SetMaxDatagramSize(size ByteCount)

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	congestionExt "github.com/daeuniverse/quic-go/congestion"
+	"github.com/daeuniverse/quic-go/internal/congestion"
 	"github.com/daeuniverse/quic-go/internal/mocks"
 	"github.com/daeuniverse/quic-go/internal/monotime"
 	"github.com/daeuniverse/quic-go/internal/protocol"
@@ -41,6 +43,36 @@ func (h *customFrameHandler) OnAcked(f wire.Frame) {
 type packetTracker struct {
 	Acked []protocol.PacketNumber
 	Lost  []protocol.PacketNumber
+}
+
+type recordedCongestionEvent struct {
+	priorInFlight protocol.ByteCount
+	eventTime     time.Time
+	ackedPackets  []congestionExt.AckedPacketInfo
+	lostPackets   []congestionExt.LostPacketInfo
+	ackedCap      int
+	lostCap       int
+}
+
+type congestionEventRecorder struct {
+	congestion.SendAlgorithmWithDebugInfos
+	events []recordedCongestionEvent
+}
+
+func (r *congestionEventRecorder) OnCongestionEventEx(
+	priorInFlight protocol.ByteCount,
+	eventTime time.Time,
+	ackedPackets []congestionExt.AckedPacketInfo,
+	lostPackets []congestionExt.LostPacketInfo,
+) {
+	r.events = append(r.events, recordedCongestionEvent{
+		priorInFlight: priorInFlight,
+		eventTime:     eventTime,
+		ackedPackets:  slices.Clone(ackedPackets),
+		lostPackets:   slices.Clone(lostPackets),
+		ackedCap:      cap(ackedPackets),
+		lostCap:       cap(lostPackets),
+	})
 }
 
 func (t *packetTracker) Reset() {
@@ -93,6 +125,101 @@ func TestAckRanges(t *testing.T) {
 	require.Equal(t, []wire.AckRange{{Smallest: 3, Largest: 3}, {Smallest: 1, Largest: 1}}, ackRanges(1, 3))
 	require.Equal(t, []wire.AckRange{{Smallest: 3, Largest: 4}, {Smallest: 1, Largest: 1}}, ackRanges(1, 3, 4))
 	require.Equal(t, []wire.AckRange{{Smallest: 5, Largest: 6}, {Smallest: 0, Largest: 2}}, ackRanges(0, 1, 2, 5, 6))
+}
+
+func TestResetCongestionEventPacketInfo(t *testing.T) {
+	t.Run("retain bounded allocation", func(t *testing.T) {
+		packets := make([]congestionExt.LostPacketInfo, 2, protocol.MaxNumAckRanges)
+		packets[0].PacketNumber = 10
+		packets[1].PacketNumber = 11
+
+		packets = resetCongestionEventPacketInfo(packets)
+		require.Empty(t, packets)
+		require.Equal(t, protocol.MaxNumAckRanges, cap(packets))
+		require.Equal(t, make([]congestionExt.LostPacketInfo, 2), packets[:2])
+	})
+
+	t.Run("discard oversized allocation", func(t *testing.T) {
+		packets := make([]congestionExt.AckedPacketInfo, 1, protocol.MaxNumAckRanges+1)
+		require.Nil(t, resetCongestionEventPacketInfo(packets))
+	})
+}
+
+func TestSentPacketHandlerCongestionEventPacketInfo(t *testing.T) {
+	sph := NewSentPacketHandler(
+		0,
+		1200,
+		utils.NewRTTStats(),
+		&utils.ConnectionStats{},
+		true,
+		false,
+		nil,
+		protocol.PerspectiveServer,
+		nil,
+		utils.DefaultLogger,
+	)
+	handler := sph.(*sentPacketHandler)
+	recorder := &congestionEventRecorder{SendAlgorithmWithDebugInfos: handler.getCongestionControl()}
+	handler.congestion = recorder
+
+	now := monotime.Now()
+	var pns []protocol.PacketNumber
+	for i := range 6 {
+		pn := sph.PopPacketNumber(protocol.EncryptionInitial)
+		sph.SentPacket(
+			now,
+			pn,
+			protocol.InvalidPacketNumber,
+			nil,
+			[]Frame{{Frame: &wire.PingFrame{}}},
+			protocol.EncryptionInitial,
+			protocol.ECNNon,
+			protocol.ByteCount((i+1)*100),
+			false,
+			false,
+		)
+		pns = append(pns, pn)
+	}
+
+	firstEventTime := now.Add(time.Second)
+	_, err := sph.ReceivedAck(
+		&wire.AckFrame{AckRanges: ackRanges(pns[4])},
+		protocol.EncryptionInitial,
+		firstEventTime,
+	)
+	require.NoError(t, err)
+	require.Len(t, recorder.events, 1)
+	require.Equal(t, recordedCongestionEvent{
+		priorInFlight: 2100,
+		eventTime:     firstEventTime.ToTime(),
+		ackedPackets: []congestionExt.AckedPacketInfo{{
+			PacketNumber: congestionExt.PacketNumber(pns[4]),
+			BytesAcked:   500,
+		}},
+		lostPackets: []congestionExt.LostPacketInfo{
+			{PacketNumber: congestionExt.PacketNumber(pns[0]), BytesLost: 100},
+			{PacketNumber: congestionExt.PacketNumber(pns[1]), BytesLost: 200},
+		},
+		ackedCap: 1,
+		lostCap:  2,
+	}, recorder.events[0])
+
+	secondEventTime := firstEventTime.Add(time.Second)
+	_, err = sph.ReceivedAck(
+		&wire.AckFrame{AckRanges: ackRanges(pns[5])},
+		protocol.EncryptionInitial,
+		secondEventTime,
+	)
+	require.NoError(t, err)
+	require.Len(t, recorder.events, 2)
+	require.Equal(t, []congestionExt.AckedPacketInfo{{
+		PacketNumber: congestionExt.PacketNumber(pns[5]),
+		BytesAcked:   600,
+	}}, recorder.events[1].ackedPackets)
+	require.Equal(t, []congestionExt.LostPacketInfo{{
+		PacketNumber: congestionExt.PacketNumber(pns[2]),
+		BytesLost:    300,
+	}}, recorder.events[1].lostPackets)
 }
 
 func TestSentPacketHandlerSendAndAcknowledge(t *testing.T) {
