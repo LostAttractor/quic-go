@@ -12,10 +12,11 @@ jobs:
   PR:
     if: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
     env:
-      # Forked PRs don't receive repository secrets, so they run without corpus storage.
+      # Run without corpus storage when repository secrets are unavailable.
       CLUSTERFUZZ_LITE_STORAGE_REPO: >-
         ${{
           github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+          secrets.CLUSTERFUZZ_LITE_STORAGE != '' &&
           format('https://{0}@github.com/quic-go/clusterfuzzlite-storage.git', secrets.CLUSTERFUZZ_LITE_STORAGE) || ''
         }}
     runs-on: ${{ fromJSON(vars['CLUSTERFUZZ_LITE_RUNNER_UBUNTU'] || '"ubuntu-latest"') }}

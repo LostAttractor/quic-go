@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   Pruning:
+    # The persistent corpus is stored in an upstream private repository.
+    if: github.repository == 'quic-go/quic-go'
     runs-on: ubuntu-latest
     steps:
     - name: Build Fuzzers
