@@ -43,7 +43,8 @@ jobs:
         if: ${{ matrix.os == 'ubuntu' }} # speed things up. Windows and OSX VMs are slow
         env:
           TIMESCALE_FACTOR: 20
-        run: go test -race -v -shuffle on ./...
+        # Allocation counts are tested above without race instrumentation.
+        run: go test -race -v -shuffle on -skip '^TestFrameParserAllocs$' ./...
       - name: Run handshake tests in FIPS140 mode
         env:
           GODEBUG: fips140=only
