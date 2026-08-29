@@ -315,15 +315,23 @@ func TestSysConnSendGSO(t *testing.T) {
 		t.Skip("GSO not supported on this platform")
 	}
 
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	sender, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
 	require.NoError(t, err)
-	c := &oobRecordingConn{UDPConn: udpConn}
+	t.Cleanup(func() { sender.Close() })
+	receiver, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	t.Cleanup(func() { receiver.Close() })
+
+	c := &oobRecordingConn{UDPConn: sender}
 	oobConn, err := newConn(c, true)
 	require.NoError(t, err)
 	require.True(t, oobConn.capabilities().GSO)
 
 	oob := make([]byte, 0, 123)
-	oobConn.WritePacket([]byte("foobar"), udpConn.LocalAddr(), oob, 3, protocol.ECNCE)
+	payload := []byte("aaabbbcc")
+	n, err := oobConn.WritePacket(payload, receiver.LocalAddr(), oob, 3, protocol.ECNUnsupported)
+	require.NoError(t, err)
+	require.Equal(t, len(payload), n)
 	require.Len(t, c.oobs, 1)
 	oobMsg := c.oobs[0]
 	require.NotEmpty(t, oobMsg)
@@ -331,4 +339,12 @@ func TestSysConnSendGSO(t *testing.T) {
 	expected := appendUDPSegmentSizeMsg([]byte{}, 3)
 	// Check that the first control message is the OOB control message.
 	require.Equal(t, expected, oobMsg[:len(expected)])
+
+	require.NoError(t, receiver.SetReadDeadline(time.Now().Add(time.Second)))
+	buf := make([]byte, 16)
+	for _, expected := range []string{"aaa", "bbb", "cc"} {
+		n, _, err := receiver.ReadFromUDP(buf)
+		require.NoError(t, err)
+		require.Equal(t, expected, string(buf[:n]))
+	}
 }
