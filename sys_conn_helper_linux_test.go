@@ -15,6 +15,7 @@ import (
 
 var (
 	errGSO          = &os.SyscallError{Err: unix.EIO}
+	errGSOEINVAL    = &os.SyscallError{Err: unix.EINVAL}
 	errNotPermitted = &os.SyscallError{Syscall: "sendmsg", Err: unix.EPERM}
 )
 
@@ -74,6 +75,7 @@ func TestForcingSendBufferSize(t *testing.T) {
 
 func TestGSOError(t *testing.T) {
 	require.True(t, isGSOError(errGSO))
+	require.True(t, isGSOError(errGSOEINVAL))
 	require.False(t, isGSOError(nil))
 	require.False(t, isGSOError(errors.New("test")))
 }

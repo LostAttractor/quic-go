@@ -57,18 +57,43 @@ func TestSendConnDetectGSOFailure(t *testing.T) {
 		t.Skip("GSO is not supported on this platform")
 	}
 
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "EIO", err: errGSO},
+		{name: "EINVAL", err: errGSOEINVAL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remoteAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 100, 200), Port: 1337}
+			rawConn := NewMockRawConn(gomock.NewController(t))
+			rawConn.EXPECT().LocalAddr()
+			rawConn.EXPECT().capabilities().Return(connCapabilities{GSO: true}).MinTimes(1)
+			c := newSendConn(rawConn, remoteAddr, packetInfo{}, utils.DefaultLogger)
+			gomock.InOrder(
+				rawConn.EXPECT().WritePacket([]byte("foobar"), remoteAddr, gomock.Any(), uint16(4), protocol.ECNCE).Return(0, tc.err),
+				rawConn.EXPECT().WritePacket([]byte("foob"), remoteAddr, gomock.Any(), uint16(0), protocol.ECNCE).Return(4, nil),
+				rawConn.EXPECT().WritePacket([]byte("ar"), remoteAddr, gomock.Any(), uint16(0), protocol.ECNCE).Return(2, nil),
+			)
+			require.NoError(t, c.Write([]byte("foobar"), 4, protocol.ECNCE))
+			require.False(t, c.capabilities().GSO)
+		})
+	}
+}
+
+func TestSendConnDoesNotFallbackPlainSend(t *testing.T) {
+	if !platformSupportsGSO {
+		t.Skip("GSO is not supported on this platform")
+	}
+
 	remoteAddr := &net.UDPAddr{IP: net.IPv4(192, 168, 100, 200), Port: 1337}
 	rawConn := NewMockRawConn(gomock.NewController(t))
 	rawConn.EXPECT().LocalAddr()
-	rawConn.EXPECT().capabilities().Return(connCapabilities{GSO: true}).MinTimes(1)
+	rawConn.EXPECT().capabilities().Return(connCapabilities{GSO: true})
+	rawConn.EXPECT().WritePacket([]byte("foobar"), remoteAddr, gomock.Any(), uint16(0), protocol.ECNCE).Return(0, errGSOEINVAL)
 	c := newSendConn(rawConn, remoteAddr, packetInfo{}, utils.DefaultLogger)
-	gomock.InOrder(
-		rawConn.EXPECT().WritePacket([]byte("foobar"), remoteAddr, gomock.Any(), uint16(4), protocol.ECNCE).Return(0, errGSO),
-		rawConn.EXPECT().WritePacket([]byte("foob"), remoteAddr, gomock.Any(), uint16(0), protocol.ECNCE).Return(4, nil),
-		rawConn.EXPECT().WritePacket([]byte("ar"), remoteAddr, gomock.Any(), uint16(0), protocol.ECNCE).Return(2, nil),
-	)
-	require.NoError(t, c.Write([]byte("foobar"), 4, protocol.ECNCE))
-	require.False(t, c.capabilities().GSO)
+	require.ErrorIs(t, c.Write([]byte("foobar"), 0, protocol.ECNCE), errGSOEINVAL)
+	require.True(t, c.capabilities().GSO)
 }
 
 func TestSendConnSendmsgFailures(t *testing.T) {
