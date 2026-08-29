@@ -1128,6 +1128,8 @@ func TestServer0RTTReordering(t *testing.T) {
 	})
 
 	connID := protocol.ParseConnectionID([]byte{1, 2, 3, 4, 5, 6, 7, 8})
+	// Keep queue expiration independent of how long the test takes to run.
+	rcvTime := monotime.Now()
 
 	var zeroRTTPackets []receivedPacket
 
@@ -1146,6 +1148,7 @@ func TestServer0RTTReordering(t *testing.T) {
 			},
 			make([]byte, 100),
 		)
+		p.rcvTime = rcvTime
 		server.handlePacket(p)
 		zeroRTTPackets = append(zeroRTTPackets, p)
 	}
@@ -1165,6 +1168,7 @@ func TestServer0RTTReordering(t *testing.T) {
 		},
 		make([]byte, 100),
 	)
+	p.rcvTime = rcvTime
 	server.handlePacket(p)
 
 	require.Eventually(t,
@@ -1189,6 +1193,7 @@ func TestServer0RTTReordering(t *testing.T) {
 
 	// now receive the Initial
 	initial := getValidInitialPacket(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 42}, randConnID(5), connID)
+	initial.rcvTime = rcvTime
 	server.handlePacket(initial)
 
 	for i := range max0RTTQueueLen + 1 {
@@ -1270,6 +1275,7 @@ func TestServer0RTTQueueing(t *testing.T) {
 		},
 		make([]byte, 123),
 	)
+	p.rcvTime = otherRcvTime
 	server.handlePacket(p)
 	require.Eventually(t,
 		func() bool { return len(eventRecorder.Events(qlog.PacketDropped{})) > 0 },
