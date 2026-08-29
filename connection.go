@@ -2637,7 +2637,11 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			continue
 		}
 
-		c.sendQueue.Send(buf, uint16(maxSize), ecn)
+		var gsoSize uint16
+		if buf.Len() > maxSize {
+			gsoSize = uint16(maxSize)
+		}
+		c.sendQueue.Send(buf, gsoSize, ecn)
 
 		if dontSendMore {
 			return nil

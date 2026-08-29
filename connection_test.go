@@ -2295,12 +2295,21 @@ func TestConnectionGSOBatchPacketSize(t *testing.T) {
 			))
 		}
 		// The smaller (fourth) packet concluded this GSO batch, but the send loop will immediately start composing the next batch.
-		// We therefore send a "foobar", so we can check that we're actually generating two GSO batches.
+		// Send standalone short and full-size packets to verify that neither uses UDP_SEGMENT.
 		calls = append(calls,
 			tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 				func(buffer *packetBuffer, count protocol.ByteCount, t monotime.Time, version protocol.Version) (shortHeaderPacket, error) {
 					buffer.Data = append(buffer.Data, []byte("foobar")...)
 					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(14)}, nil
+				},
+			),
+		)
+		singleFullSizeData := bytes.Repeat([]byte{0xf}, int(maxPacketSize))
+		calls = append(calls,
+			tc.packer.EXPECT().AppendPacket(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+				func(buffer *packetBuffer, count protocol.ByteCount, t monotime.Time, version protocol.Version) (shortHeaderPacket, error) {
+					buffer.Data = append(buffer.Data, singleFullSizeData...)
+					return shortHeaderPacket{PacketNumber: protocol.PacketNumber(15)}, nil
 				},
 			),
 		)
@@ -2312,7 +2321,8 @@ func TestConnectionGSOBatchPacketSize(t *testing.T) {
 		done := make(chan struct{})
 		gomock.InOrder(
 			tc.sendConn.EXPECT().Write(expectedData, uint16(maxPacketSize), protocol.ECT1),
-			tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(maxPacketSize), protocol.ECT1).DoAndReturn(
+			tc.sendConn.EXPECT().Write([]byte("foobar"), uint16(0), protocol.ECT1),
+			tc.sendConn.EXPECT().Write(singleFullSizeData, uint16(0), protocol.ECT1).DoAndReturn(
 				func([]byte, uint16, protocol.ECN) error { close(done); return nil },
 			),
 		)
