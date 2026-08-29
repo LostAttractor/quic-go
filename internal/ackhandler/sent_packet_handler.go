@@ -129,6 +129,21 @@ func resetCongestionEventPacketInfo[T any](packets []T) []T {
 	return packets[:0]
 }
 
+func (h *sentPacketHandler) notifyCongestionEvent(
+	cc congestion.SendAlgorithmWithDebugInfos,
+	priorInFlight protocol.ByteCount,
+	eventTime monotime.Time,
+) {
+	if cex, ok := cc.(congestion.SendAlgorithmEx); ok &&
+		(len(h.ackedPacketsInfo) != 0 || len(h.lostPacketsInfo) != 0) {
+		ackedPackets := h.ackedPacketsInfo[:len(h.ackedPacketsInfo):len(h.ackedPacketsInfo)]
+		lostPackets := h.lostPacketsInfo[:len(h.lostPacketsInfo):len(h.lostPacketsInfo)]
+		cex.OnCongestionEventEx(priorInFlight, eventTime.ToTime(), ackedPackets, lostPackets)
+	}
+	h.ackedPacketsInfo = resetCongestionEventPacketInfo(h.ackedPacketsInfo)
+	h.lostPacketsInfo = resetCongestionEventPacketInfo(h.lostPacketsInfo)
+}
+
 // clientAddressValidated indicates whether the address was validated beforehand by an address validation token.
 // If the address was validated, the amplification limit doesn't apply. It has no effect for a client.
 func NewSentPacketHandler(
@@ -471,14 +486,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		}
 	}
 
-	if cex, ok := cc.(congestion.SendAlgorithmEx); ok &&
-		(len(h.ackedPacketsInfo) != 0 || len(h.lostPacketsInfo) != 0) {
-		ackedPackets := h.ackedPacketsInfo[:len(h.ackedPacketsInfo):len(h.ackedPacketsInfo)]
-		lostPackets := h.lostPacketsInfo[:len(h.lostPacketsInfo):len(h.lostPacketsInfo)]
-		cex.OnCongestionEventEx(priorInFlight, rcvTime.ToTime(), ackedPackets, lostPackets)
-	}
-	h.ackedPacketsInfo = resetCongestionEventPacketInfo(h.ackedPacketsInfo)
-	h.lostPacketsInfo = resetCongestionEventPacketInfo(h.lostPacketsInfo)
+	h.notifyCongestionEvent(cc, priorInFlight, rcvTime)
 
 	// detect spurious losses for application data packets, if the ACK was not reordered
 	if encLevel == protocol.Encryption1RTT && largestAcked == pnSpace.largestAcked {
@@ -921,7 +929,9 @@ func (h *sentPacketHandler) OnLossDetectionTimeout(now monotime.Time) error {
 			})
 		}
 		// Early retransmit or time loss detection
+		priorInFlight := h.bytesInFlight
 		h.detectLostPackets(now, encLevel)
+		h.notifyCongestionEvent(h.getCongestionControl(), priorInFlight, now)
 		return nil
 	}
 

@@ -222,6 +222,74 @@ func TestSentPacketHandlerCongestionEventPacketInfo(t *testing.T) {
 	}}, recorder.events[1].lostPackets)
 }
 
+func TestSentPacketHandlerReportsTimerLosses(t *testing.T) {
+	rttStats := utils.NewRTTStats()
+	sph := NewSentPacketHandler(
+		0,
+		1200,
+		rttStats,
+		&utils.ConnectionStats{},
+		true,
+		false,
+		nil,
+		protocol.PerspectiveServer,
+		nil,
+		utils.DefaultLogger,
+	)
+	handler := sph.(*sentPacketHandler)
+	recorder := &congestionEventRecorder{SendAlgorithmWithDebugInfos: handler.getCongestionControl()}
+	handler.congestion = recorder
+
+	now := monotime.Now()
+	sendPacket := func(sentTime monotime.Time, size protocol.ByteCount) protocol.PacketNumber {
+		pn := sph.PopPacketNumber(protocol.EncryptionInitial)
+		sph.SentPacket(
+			sentTime,
+			pn,
+			protocol.InvalidPacketNumber,
+			nil,
+			[]Frame{{Frame: &wire.PingFrame{}}},
+			protocol.EncryptionInitial,
+			protocol.ECNNon,
+			size,
+			false,
+			false,
+		)
+		return pn
+	}
+
+	oldPacket := sendPacket(now.Add(-time.Second), 100)
+	timerPacket := sendPacket(now.Add(-10*time.Millisecond), 200)
+	ackedPacket := sendPacket(now, 300)
+	_, err := sph.ReceivedAck(
+		&wire.AckFrame{AckRanges: ackRanges(ackedPacket)},
+		protocol.EncryptionInitial,
+		now.Add(time.Second),
+	)
+	require.NoError(t, err)
+	require.Equal(t, time.Second, rttStats.SmoothedRTT())
+	require.Len(t, recorder.events, 1)
+	require.Equal(t, []congestionExt.LostPacketInfo{{
+		PacketNumber: congestionExt.PacketNumber(oldPacket),
+		BytesLost:    100,
+	}}, recorder.events[0].lostPackets)
+
+	timeout := sph.GetLossDetectionTimeout()
+	require.NotZero(t, timeout)
+	require.NoError(t, sph.OnLossDetectionTimeout(timeout))
+	require.Len(t, recorder.events, 2)
+	require.Equal(t, recordedCongestionEvent{
+		priorInFlight: 200,
+		eventTime:     timeout.ToTime(),
+		ackedPackets:  []congestionExt.AckedPacketInfo{},
+		lostPackets: []congestionExt.LostPacketInfo{{
+			PacketNumber: congestionExt.PacketNumber(timerPacket),
+			BytesLost:    200,
+		}},
+		lostCap: 1,
+	}, recorder.events[1])
+}
+
 func TestSentPacketHandlerSendAndAcknowledge(t *testing.T) {
 	t.Run("Initial", func(t *testing.T) {
 		testSentPacketHandlerSendAndAcknowledge(t, protocol.EncryptionInitial)
