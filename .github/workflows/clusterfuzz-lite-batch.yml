@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   batch-fuzzing:
+    # The persistent corpus is stored in an upstream private repository.
+    if: github.repository == 'quic-go/quic-go'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
