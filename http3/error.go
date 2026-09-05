@@ -14,9 +14,14 @@ type Error struct {
 	Remote       bool
 	ErrorCode    ErrCode
 	ErrorMessage string
+	cause        error
 }
 
 var _ error = &Error{}
+
+// Unwrap preserves whether the peer canceled a stream or closed the whole
+// connection. An HTTP/3 error code alone does not describe that scope.
+func (e *Error) Unwrap() error { return e.cause }
 
 func (e *Error) Error() string {
 	s := e.ErrorCode.string()
@@ -44,7 +49,7 @@ func maybeReplaceError(err error) error {
 	}
 
 	var (
-		e      Error
+		e      = Error{cause: err}
 		strErr *quic.StreamError
 		appErr *quic.ApplicationError
 	)
