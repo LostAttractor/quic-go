@@ -14,12 +14,14 @@ type packetWithPacketNumber struct {
 
 // A Packet is a packet
 type packet struct {
-	SendTime        monotime.Time
-	StreamFrames    []StreamFrame
-	Frames          []Frame
-	LargestAcked    protocol.PacketNumber // InvalidPacketNumber if the packet doesn't contain an ACK
-	Length          protocol.ByteCount
-	EncryptionLevel protocol.EncryptionLevel
+	SendTime             monotime.Time
+	StreamFrames         []StreamFrame
+	Frames               []Frame
+	LargestAcked         protocol.PacketNumber // InvalidPacketNumber if the packet doesn't contain an ACK
+	Length               protocol.ByteCount
+	EncryptionLevel      protocol.EncryptionLevel
+	congestionController *ccAdapter
+	congestionNumber     protocol.PacketNumber
 
 	IsPathMTUProbePacket bool // We don't report the loss of Path MTU probe packets to the congestion controller.
 
@@ -48,6 +50,8 @@ func getPacket() *packet {
 	p.IsPathMTUProbePacket = false
 	p.includedInBytesInFlight = false
 	p.isPathProbePacket = false
+	p.congestionController = nil
+	p.congestionNumber = protocol.InvalidPacketNumber
 	return p
 }
 
@@ -56,5 +60,6 @@ func getPacket() *packet {
 func putPacket(p *packet) {
 	p.Frames = nil
 	p.StreamFrames = nil
+	p.congestionController = nil
 	packetPool.Put(p)
 }
