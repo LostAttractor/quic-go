@@ -3,7 +3,7 @@ package ackhandler
 import (
 	"errors"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	congestionExt "github.com/daeuniverse/quic-go/congestion"
@@ -117,10 +117,13 @@ type sentPacketHandler struct {
 
 	bytesInFlight protocol.ByteCount
 
-	congestion      congestion.SendAlgorithmWithDebugInfos
-	congestionMutex sync.RWMutex
-	rttStats        *utils.RTTStats
-	connStats       *utils.ConnectionStats
+	congestion congestion.SendAlgorithmWithDebugInfos
+	// Replayed to each newly installed controller.
+	maxDatagramSize protocol.ByteCount
+	// Set from any goroutine; installed by the connection loop on its next use.
+	pendingCongestion atomic.Pointer[ccAdapter]
+	rttStats          *utils.RTTStats
+	connStats         *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -169,6 +172,14 @@ func (h *sentPacketHandler) notifyCongestionEvent(
 	}
 	h.ackedPacketsInfo = resetCongestionEventPacketInfo(h.ackedPacketsInfo)
 	h.lostPacketsInfo = resetCongestionEventPacketInfo(h.lostPacketsInfo)
+	h.publishCongestionWindow(cc)
+}
+
+// The default sender publishes its own window; external controllers can't.
+func (h *sentPacketHandler) publishCongestionWindow(cc congestion.SendAlgorithmWithDebugInfos) {
+	if adapter, ok := cc.(*ccAdapter); ok {
+		h.connStats.CongestionWindow.Store(uint64(adapter.GetCongestionWindow()))
+	}
 }
 
 // clientAddressValidated indicates whether the address was validated beforehand by an address validation token.
@@ -212,6 +223,7 @@ func NewSentPacketHandler(
 		rttStats:           rttStats,
 		connStats:          connStats,
 		congestion:         congestion,
+		maxDatagramSize:    initialMaxDatagramSize,
 		ignorePacketsBelow: ignorePacketsBelow,
 		perspective:        pers,
 		qlogger:            qlogger,
@@ -255,6 +267,18 @@ func (h *sentPacketHandler) removeFromBytesInFlight(p *packet) {
 	}
 }
 
+func (h *sentPacketHandler) discardPacket(pn protocol.PacketNumber, p *packet) {
+	if !p.includedInBytesInFlight {
+		return
+	}
+	h.removeFromBytesInFlight(p)
+	if adapter, ok := h.getCongestionControl().(*ccAdapter); ok {
+		if cc, ok := adapter.CC.(congestionExt.PacketDiscardedCongestionControl); ok {
+			cc.OnPacketDiscarded(congestionExt.PacketNumber(p.congestionID(adapter, pn)), congestionExt.ByteCount(h.bytesInFlight))
+		}
+	}
+}
+
 func (h *sentPacketHandler) DropPackets(encLevel protocol.EncryptionLevel, now monotime.Time) {
 	if encLevel == protocol.Encryption1RTT {
 		panic(fmt.Sprintf("Cannot drop keys for encryption level %s", encLevel))
@@ -281,7 +305,7 @@ func (h *sentPacketHandler) DropPackets(encLevel protocol.EncryptionLevel, now m
 		if p.EncryptionLevel != encLevel {
 			continue
 		}
-		h.removeFromBytesInFlight(p)
+		h.discardPacket(pn, p)
 		h.hist.Remove(pn)
 	}
 	// drop the packet number space
@@ -377,7 +401,12 @@ func (h *sentPacketHandler) SentPacket(
 			h.numProbesToSend--
 		}
 	}
-	h.getCongestionControl().OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	cc := h.getCongestionControl()
+	if adapter, ok := cc.(*ccAdapter); ok {
+		adapter.sentPacket(t, h.bytesInFlight, p)
+	} else {
+		cc.OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	}
 
 	if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 		h.ecnTracker.SentPacket(pn, ecn)
@@ -523,7 +552,10 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil && largestAcked > pnSpace.largestAcked {
 			congested := h.ecnTracker.HandleNewlyAcked(ackedPackets, int64(ack.ECT0), int64(ack.ECT1), int64(ack.ECNCE))
 			if congested {
-				cc.OnCongestionEvent(largestAcked, 0, priorInFlight)
+				p := ackedPackets[len(ackedPackets)-1]
+				if number := p.congestionID(cc, largestAcked); number != protocol.InvalidPacketNumber {
+					cc.OnCongestionEvent(number, 0, priorInFlight)
+				}
 			}
 		}
 
@@ -532,7 +564,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	// new acked packets can advance largestAcked or update the RTT,
 	// and a larger time threshold moves the loss deadline
 	if len(ackedPackets) > 0 || timeThresholdIncreased {
-		h.detectLostPackets(rcvTime, encLevel)
+		h.detectLostPackets(rcvTime, encLevel, cc)
 		if encLevel == protocol.Encryption1RTT {
 			h.detectLostPathProbes(rcvTime)
 		}
@@ -542,6 +574,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 		cc.OnSpuriousLoss(pn)
 	}
 	if len(ackedPackets) == 0 {
+		h.notifyCongestionEvent(cc, priorInFlight, rcvTime)
 		if len(spuriousLosses) > 0 && h.qlogger != nil {
 			h.qlogMetricsUpdated()
 		}
@@ -552,14 +585,20 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	}
 
 	h.ackedPacketsInfo = h.ackedPacketsInfo[:0]
+	_, collectPacketInfo := cc.(congestion.SendAlgorithmEx)
 	var acked1RTTPacket bool
 	for _, p := range ackedPackets {
 		if p.includedInBytesInFlight {
-			cc.OnPacketAcked(p.PacketNumber, p.Length, priorInFlight, rcvTime)
-			h.ackedPacketsInfo = append(h.ackedPacketsInfo, congestionExt.AckedPacketInfo{
-				PacketNumber: congestionExt.PacketNumber(p.PacketNumber),
-				BytesAcked:   congestionExt.ByteCount(p.Length),
-			})
+			number := p.congestionID(cc, p.PacketNumber)
+			if number != protocol.InvalidPacketNumber {
+				cc.OnPacketAcked(number, p.Length, priorInFlight, rcvTime)
+			}
+			if collectPacketInfo {
+				h.ackedPacketsInfo = append(h.ackedPacketsInfo, congestionExt.AckedPacketInfo{
+					PacketNumber: congestionExt.PacketNumber(number),
+					BytesAcked:   congestionExt.ByteCount(p.Length),
+				})
+			}
 		}
 		if p.EncryptionLevel == protocol.Encryption1RTT {
 			acked1RTTPacket = true
@@ -926,8 +965,9 @@ func countPacketNumbers(pns []protocol.PacketNumber, lower, upper protocol.Packe
 	return count
 }
 
-func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protocol.EncryptionLevel) {
+func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protocol.EncryptionLevel, cc congestion.SendAlgorithmWithDebugInfos) {
 	h.lostPacketsInfo = h.lostPacketsInfo[:0]
+	_, collectPacketInfo := cc.(congestion.SendAlgorithmEx)
 	pnSpace := h.getPacketNumberSpace(encLevel.PacketNumberSpace())
 	pnSpace.lossTime = 0
 	space := encLevel.PacketNumberSpace()
@@ -946,7 +986,6 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 	lostSendTime := now.Add(-lossDelay)
 
 	priorInFlight := h.bytesInFlight
-	cc := h.getCongestionControl()
 	for pn, p := range h.hist.Packets() {
 		if pn > pnSpace.largestAcked {
 			break
@@ -1020,13 +1059,22 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 				// the bytes in flight need to be reduced no matter if the frames in this packet will be retransmitted
 				h.removeFromBytesInFlight(p)
 				h.queueFramesForRetransmission(p)
-				if !p.IsPathMTUProbePacket {
-					cc.OnCongestionEvent(pn, p.Length, priorInFlight)
+				number := p.congestionID(cc, pn)
+				if !p.IsPathMTUProbePacket && number != protocol.InvalidPacketNumber {
+					cc.OnCongestionEvent(number, p.Length, priorInFlight)
 				}
-				h.lostPacketsInfo = append(h.lostPacketsInfo, congestionExt.LostPacketInfo{
-					PacketNumber: congestionExt.PacketNumber(pn),
-					BytesLost:    congestionExt.ByteCount(p.Length),
-				})
+				if _, external := cc.(*ccAdapter); external && !p.IsPathMTUProbePacket {
+					// The default sender counts the losses it is told about itself.
+					h.connStats.PacketsLost.Add(1)
+					h.connStats.BytesLost.Add(uint64(p.Length))
+				}
+				if collectPacketInfo {
+					h.lostPacketsInfo = append(h.lostPacketsInfo, congestionExt.LostPacketInfo{
+						PacketNumber:   congestionExt.PacketNumber(number),
+						BytesLost:      congestionExt.ByteCount(p.Length),
+						IsPathMTUProbe: p.IsPathMTUProbePacket,
+					})
+				}
 				if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 					h.ecnTracker.LostPacket(pn)
 				}
@@ -1063,8 +1111,9 @@ func (h *sentPacketHandler) OnLossDetectionTimeout(now monotime.Time) error {
 		}
 		// Early retransmit or time loss detection
 		priorInFlight := h.bytesInFlight
-		h.detectLostPackets(now, encLevel)
-		h.notifyCongestionEvent(h.getCongestionControl(), priorInFlight, now)
+		cc := h.getCongestionControl()
+		h.detectLostPackets(now, encLevel, cc)
+		h.notifyCongestionEvent(cc, priorInFlight, now)
 		return nil
 	}
 
@@ -1202,7 +1251,10 @@ func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 }
 
 func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
-	h.getCongestionControl().SetMaxDatagramSize(s)
+	h.maxDatagramSize = s
+	cc := h.getCongestionControl()
+	cc.SetMaxDatagramSize(s)
+	h.publishCongestionWindow(cc)
 }
 
 func (h *sentPacketHandler) isAmplificationLimited() bool {
@@ -1221,7 +1273,7 @@ func (h *sentPacketHandler) QueueProbePacket(space protocol.PacketNumberSpace) b
 	// Keep track of acknowledged frames instead.
 	// Call DeclareLost before queueFramesForRetransmission, which clears the packet's frames.
 	h.hist.DeclareLost(pn)
-	h.removeFromBytesInFlight(p)
+	h.discardPacket(pn, p)
 	h.queueFramesForRetransmission(p)
 	return true
 }
@@ -1245,10 +1297,10 @@ func (h *sentPacketHandler) queueFramesForRetransmission(p *packet) {
 }
 
 func (h *sentPacketHandler) ResetForRetry(now monotime.Time) {
-	h.bytesInFlight = 0
 	var firstPacketSendTime monotime.Time
 	// Only Initial and 0-RTT packets can have been sent before a Retry.
-	for _, p := range h.hist.Packets() {
+	for pn, p := range h.hist.Packets() {
+		h.discardPacket(pn, p)
 		if p.EncryptionLevel == protocol.EncryptionInitial && firstPacketSendTime.IsZero() {
 			firstPacketSendTime = p.SendTime
 		}
@@ -1300,7 +1352,7 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 		}
 		h.hist.DeclareLost(pn)
 		if !p.isPathProbePacket {
-			h.removeFromBytesInFlight(p)
+			h.discardPacket(pn, p)
 			if p.IsAckEliciting() {
 				h.queueFramesForRetransmission(p)
 			}
@@ -1309,8 +1361,11 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	for pn := range h.hist.PathProbes() {
 		h.hist.RemovePathProbe(pn)
 	}
-	h.congestionMutex.Lock()
-	if _, ok := h.congestion.(*ccAdapter); !ok {
+	h.maxDatagramSize = initialMaxDatagramSize
+	if adapter, ok := h.getCongestionControl().(*ccAdapter); ok {
+		adapter.SetMaxDatagramSize(initialMaxDatagramSize)
+		h.publishCongestionWindow(adapter)
+	} else {
 		h.congestion = congestion.NewCubicSender(
 			congestion.DefaultClock{},
 			h.rttStats,
@@ -1320,21 +1375,32 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 			h.qlogger,
 		)
 	}
-	h.congestionMutex.Unlock()
 	h.qlogRecoveryParametersSet(true)
 	h.setLossDetectionTimer(now)
 }
 
+// getCongestionControl must only be called by the connection loop, which thus
+// is the only goroutine that ever calls into a controller.
 func (h *sentPacketHandler) getCongestionControl() congestion.SendAlgorithmWithDebugInfos {
-	h.congestionMutex.RLock()
-	cc := h.congestion
-	h.congestionMutex.RUnlock()
-	return cc
+	if h.pendingCongestion.Load() != nil {
+		if adapter := h.pendingCongestion.Swap(nil); adapter != nil {
+			adapter.CC.SetRTTStatsProvider(rttView{h.rttStats})
+			adapter.SetMaxDatagramSize(h.maxDatagramSize)
+			h.congestion = adapter
+			h.publishCongestionWindow(adapter)
+		}
+	}
+	return h.congestion
 }
 
 func (h *sentPacketHandler) SetCongestionControl(cc congestionExt.CongestionControl) {
-	h.congestionMutex.Lock()
-	cc.SetRTTStatsProvider(h.rttStats)
-	h.congestion = &ccAdapter{cc}
-	h.congestionMutex.Unlock()
+	h.pendingCongestion.Store(&ccAdapter{CC: cc})
+}
+
+func (h *sentPacketHandler) OnApplicationLimited() {
+	if adapter, ok := h.getCongestionControl().(*ccAdapter); ok {
+		if cc, ok := adapter.CC.(congestionExt.ApplicationLimitedCongestionControl); ok {
+			cc.OnApplicationLimited()
+		}
+	}
 }

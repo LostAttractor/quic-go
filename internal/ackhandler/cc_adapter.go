@@ -7,6 +7,7 @@ import (
 	cgInternal "github.com/daeuniverse/quic-go/internal/congestion"
 	"github.com/daeuniverse/quic-go/internal/monotime"
 	"github.com/daeuniverse/quic-go/internal/protocol"
+	"github.com/daeuniverse/quic-go/internal/utils"
 )
 
 var (
@@ -16,6 +17,27 @@ var (
 
 type ccAdapter struct {
 	CC congestion.CongestionControl
+	// Assigned on the connection loop, independently of QUIC packet-number
+	// spaces. The adapter identity is also the controller installation epoch.
+	nextPacketNumber protocol.PacketNumber
+}
+
+func (a *ccAdapter) sentPacket(t monotime.Time, flight protocol.ByteCount, p *packet) {
+	p.congestionController, p.congestionNumber = a, a.nextPacketNumber
+	a.nextPacketNumber++
+	a.OnPacketSent(t, flight, p.congestionNumber, p.Length, p.IsAckEliciting())
+}
+
+// Old-controller packets still contribute to transport flight accounting, but
+// have no sample in the current controller. Never alias them to a new sample.
+func (p *packet) congestionID(cc cgInternal.SendAlgorithmWithDebugInfos, wireNumber protocol.PacketNumber) protocol.PacketNumber {
+	if adapter, ok := cc.(*ccAdapter); ok {
+		if p.congestionController != adapter {
+			return protocol.InvalidPacketNumber
+		}
+		return p.congestionNumber
+	}
+	return wireNumber
 }
 
 func (a *ccAdapter) TimeUntilSend(bytesInFlight protocol.ByteCount) monotime.Time {
@@ -27,6 +49,11 @@ func (a *ccAdapter) HasPacingBudget(now monotime.Time) bool {
 }
 
 func (a *ccAdapter) OnPacketSent(sentTime monotime.Time, bytesInFlight protocol.ByteCount, packetNumber protocol.PacketNumber, bytes protocol.ByteCount, isRetransmittable bool) {
+	// The internal handler counts this packet before notifying the controller;
+	// external delivery-rate samplers need the flight size before transmission.
+	if isRetransmittable {
+		bytesInFlight -= bytes
+	}
 	a.CC.OnPacketSent(sentTime.ToTime(), congestion.ByteCount(bytesInFlight), congestion.PacketNumber(packetNumber), congestion.ByteCount(bytes), isRetransmittable)
 }
 
@@ -53,9 +80,8 @@ func (a *ccAdapter) OnCongestionEventEx(priorInFlight protocol.ByteCount, eventT
 // The external interface has no spurious-loss rollback callback.
 func (a *ccAdapter) OnSpuriousLoss(protocol.PacketNumber) {}
 
-func (a *ccAdapter) OnRetransmissionTimeout(packetsRetransmitted bool) {
-	a.CC.OnRetransmissionTimeout(packetsRetransmitted)
-}
+// quic-go never calls OnRetransmissionTimeout, so the external interface omits it.
+func (a *ccAdapter) OnRetransmissionTimeout(bool) {}
 
 func (a *ccAdapter) SetMaxDatagramSize(size protocol.ByteCount) {
 	a.CC.SetMaxDatagramSize(congestion.ByteCount(size))
@@ -72,3 +98,13 @@ func (a *ccAdapter) InRecovery() bool {
 func (a *ccAdapter) GetCongestionWindow() protocol.ByteCount {
 	return protocol.ByteCount(a.CC.GetCongestionWindow())
 }
+
+// rttView keeps controllers from changing the RTT that loss recovery uses.
+type rttView struct{ stats *utils.RTTStats }
+
+func (v rttView) MinRTT() time.Duration                     { return v.stats.MinRTT() }
+func (v rttView) LatestRTT() time.Duration                  { return v.stats.LatestRTT() }
+func (v rttView) SmoothedRTT() time.Duration                { return v.stats.SmoothedRTT() }
+func (v rttView) MeanDeviation() time.Duration              { return v.stats.MeanDeviation() }
+func (v rttView) MaxAckDelay() time.Duration                { return v.stats.MaxAckDelay() }
+func (v rttView) PTO(includeMaxAckDelay bool) time.Duration { return v.stats.PTO(includeMaxAckDelay) }
