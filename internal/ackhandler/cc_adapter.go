@@ -16,6 +16,27 @@ var (
 
 type ccAdapter struct {
 	CC congestion.CongestionControl
+	// Assigned on the connection loop, independently of QUIC packet-number
+	// spaces. The adapter identity is also the controller installation epoch.
+	nextPacketNumber protocol.PacketNumber
+}
+
+func (a *ccAdapter) sentPacket(t monotime.Time, flight protocol.ByteCount, p *packet) {
+	p.congestionController, p.congestionNumber = a, a.nextPacketNumber
+	a.nextPacketNumber++
+	a.OnPacketSent(t, flight, p.congestionNumber, p.Length, p.IsAckEliciting())
+}
+
+// Old-controller packets still contribute to transport flight accounting, but
+// have no sample in the current controller. Never alias them to a new sample.
+func (p *packet) congestionID(cc cgInternal.SendAlgorithmWithDebugInfos, wireNumber protocol.PacketNumber) protocol.PacketNumber {
+	if adapter, ok := cc.(*ccAdapter); ok {
+		if p.congestionController != adapter {
+			return protocol.InvalidPacketNumber
+		}
+		return p.congestionNumber
+	}
+	return wireNumber
 }
 
 func (a *ccAdapter) TimeUntilSend(bytesInFlight protocol.ByteCount) monotime.Time {
@@ -27,6 +48,11 @@ func (a *ccAdapter) HasPacingBudget(now monotime.Time) bool {
 }
 
 func (a *ccAdapter) OnPacketSent(sentTime monotime.Time, bytesInFlight protocol.ByteCount, packetNumber protocol.PacketNumber, bytes protocol.ByteCount, isRetransmittable bool) {
+	// The internal handler counts this packet before notifying the controller;
+	// external delivery-rate samplers need the flight size before transmission.
+	if isRetransmittable {
+		bytesInFlight -= bytes
+	}
 	a.CC.OnPacketSent(sentTime.ToTime(), congestion.ByteCount(bytesInFlight), congestion.PacketNumber(packetNumber), congestion.ByteCount(bytes), isRetransmittable)
 }
 

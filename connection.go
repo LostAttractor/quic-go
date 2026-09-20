@@ -2621,6 +2621,9 @@ func (c *Conn) sendPackets(now monotime.Time) error {
 	if !c.handshakeConfirmed {
 		packet, err := c.packer.PackCoalescedPacket(false, c.maxPacketSize(), now, c.version)
 		if err != nil || packet == nil {
+			if err == nil {
+				c.onApplicationLimited()
+			}
 			return err
 		}
 		if !c.sentFirstPacket && c.perspective == protocol.PerspectiveClient && c.qlogger != nil {
@@ -2652,6 +2655,7 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		ecn := c.sentPacketHandler.ECNMode(true)
 		if _, err := c.appendOneShortHeaderPacket(buf, c.maxPacketSize(), ecn, now); err != nil {
 			if err == errNothingToPack {
+				c.onApplicationLimited()
 				buf.Release()
 				return nil
 			}
@@ -2691,6 +2695,7 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			if err != errNothingToPack {
 				return err
 			}
+			c.onApplicationLimited()
 			if buf.Len() == 0 {
 				buf.Release()
 				return nil
@@ -2741,6 +2746,12 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 
 		ecn = nextECN
 		buf = getLargePacketBuffer()
+	}
+}
+
+func (c *Conn) onApplicationLimited() {
+	if h, ok := c.sentPacketHandler.(congestion.ApplicationLimitedCongestionControl); ok {
+		h.OnApplicationLimited()
 	}
 }
 
