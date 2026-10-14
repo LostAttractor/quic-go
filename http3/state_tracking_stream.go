@@ -3,6 +3,7 @@ package http3
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"sync"
 
@@ -117,6 +118,17 @@ func (s *stateTrackingStream) Read(b []byte) (int, error) {
 		s.closeReceive(err)
 	}
 	return n, err
+}
+
+// tryReadEOF ends the receive side on a confirmed end or an error, like Read.
+func (s *stateTrackingStream) tryReadEOF() (bool, error) {
+	ended, err := s.Stream.TryReadEOF()
+	if ended {
+		s.closeReceive(io.EOF)
+	} else if err != nil {
+		s.closeReceive(err)
+	}
+	return ended, err
 }
 
 func (s *stateTrackingStream) SendDatagram(b []byte) error {

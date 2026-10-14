@@ -78,6 +78,44 @@ func (s *ReceiveStream) StreamID() StreamID {
 	return s.streamID
 }
 
+// TryReadEOF reports whether the stream has ended cleanly and all bytes have
+// been consumed, without waiting for input or consuming data. A clean end is
+// acknowledged like Read returning io.EOF. False with a nil error means data
+// or the final offset is still pending. Like Read, it must not be called
+// concurrently with another reader.
+func (s *ReceiveStream) TryReadEOF() (bool, error) {
+	s.mutex.Lock()
+	var ended bool
+	var err error
+	switch {
+	case s.currentFrameIsLast && s.currentFrame == nil:
+		ended = true
+	case s.cancelledLocally || s.isRemoteCancellationEffective():
+		err = s.cancelErr
+	case s.closeForShutdownErr != nil:
+		err = s.closeForShutdownErr
+	case s.finalOffset != protocol.MaxByteCount && s.readPos == s.finalOffset:
+		ended = true
+	}
+	if ended {
+		if s.currentFrame != nil {
+			s.currentFrame = nil
+			if s.currentFrameDone != nil {
+				s.currentFrameDone()
+				s.currentFrameDone = nil
+			}
+		}
+		s.currentFrameIsLast = true
+		s.errorRead = true
+	}
+	completed := ended && s.isNewlyCompleted()
+	s.mutex.Unlock()
+	if completed {
+		s.sender.onStreamCompleted(s.streamID)
+	}
+	return ended, err
+}
+
 // SetReceiveFinalSizeCallback sets a callback that is called when the receive stream's final size is known.
 // The final size is learned from a FIN or RESET_STREAM frame.
 // Most applications don't need this. It is mainly useful for protocol layers

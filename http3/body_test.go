@@ -2,6 +2,7 @@ package http3
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -159,4 +160,27 @@ func testResponseBodyLengthLimiting(t *testing.T, alongFrameBoundary bool) {
 	n, err := rb.Read([]byte{0})
 	require.Zero(t, n)
 	require.ErrorIs(t, err, errTooMuchData)
+}
+
+// A confirmed end of the request ends the tracked receive side, like Read
+// returning io.EOF, so the connection can clear the stream.
+func TestRequestBodyTryReadEOFEndsReceiveSide(t *testing.T) {
+	client, server := newStreamPair(t)
+	var clearer mockStreamClearer
+	str := newStateTrackingStream(client, &clearer, func([]byte) error { return nil })
+	body := newRequestBody(newStream(str, nil, nil, nil, nil), -1, context.Background(), nil, nil)
+	require.NoError(t, server.Close())
+	deadline := time.Now().Add(time.Second)
+	for {
+		ended, err := body.TryReadEOF()
+		require.NoError(t, err)
+		if ended {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "FIN not received")
+		time.Sleep(time.Millisecond)
+	}
+	checkDatagramReceiveError(t, str, io.EOF)
+	require.NoError(t, str.Close())
+	require.NotNil(t, clearer.cleared)
 }

@@ -608,3 +608,42 @@ func (c *MockDatagramStreamWriteCall) DoAndReturn(f func([]byte) (int, error)) *
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// tryReadEOF mocks base method.
+func (m *MockDatagramStream) tryReadEOF() (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "tryReadEOF")
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// tryReadEOF indicates an expected call of tryReadEOF.
+func (mr *MockDatagramStreamMockRecorder) tryReadEOF() *MockDatagramStreamtryReadEOFCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "tryReadEOF", reflect.TypeOf((*MockDatagramStream)(nil).tryReadEOF))
+	return &MockDatagramStreamtryReadEOFCall{Call: call}
+}
+
+// MockDatagramStreamtryReadEOFCall wrap *gomock.Call
+type MockDatagramStreamtryReadEOFCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockDatagramStreamtryReadEOFCall) Return(arg0 bool, arg1 error) *MockDatagramStreamtryReadEOFCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockDatagramStreamtryReadEOFCall) Do(f func() (bool, error)) *MockDatagramStreamtryReadEOFCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockDatagramStreamtryReadEOFCall) DoAndReturn(f func() (bool, error)) *MockDatagramStreamtryReadEOFCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
