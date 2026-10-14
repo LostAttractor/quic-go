@@ -59,6 +59,10 @@ type Stream struct {
 	sendStreamCompleted    bool
 }
 
+// TryReadEOF reports a clean, exhausted receive side without waiting for input.
+// See ReceiveStream.TryReadEOF for its reader ownership and completion contract.
+func (s *Stream) TryReadEOF() (bool, error) { return s.receiveStr.TryReadEOF() }
+
 var (
 	_ outgoingStream            = &Stream{}
 	_ sendStreamFrameHandler    = &Stream{}
