@@ -85,6 +85,23 @@ type requestBody struct {
 
 var _ io.ReadCloser = &requestBody{}
 
+// TryReadEOF confirms the request has ended without waiting for more frames.
+// It does not consume DATA or skip an unread trailer block. Like Read, this
+// method must not be called concurrently with another body reader.
+func (r *requestBody) TryReadEOF() (bool, error) {
+	if err := r.checkContentLengthViolation(); err != nil {
+		return false, err
+	}
+	if r.str.bytesRemainingInFrame != 0 {
+		return false, nil
+	}
+	ended, err := r.str.QUICStream().TryReadEOF()
+	if ended && r.hasContentLength && r.remainingContentLength != 0 {
+		return false, io.ErrUnexpectedEOF
+	}
+	return ended, maybeReplaceError(err)
+}
+
 func newRequestBody(str *Stream, contentLength int64, connCtx context.Context, rcvdSettings <-chan struct{}, getSettings func() *Settings) *requestBody {
 	return &requestBody{
 		body:         *newBody(str, contentLength),
