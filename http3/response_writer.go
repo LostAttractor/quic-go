@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/quic-go/qpack"
+	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3/qlog"
-
+	"github.com/quic-go/qpack"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -31,6 +31,8 @@ type HTTPStreamer interface {
 }
 
 const maxSmallResponseSize = 4096
+
+var errRequestRejected = errors.New("http3: response after RejectRequest")
 
 type responseWriter struct {
 	str *Stream
@@ -53,6 +55,8 @@ type responseWriter struct {
 	trailerWritten bool // set once the response trailers has been serialized to the stream
 
 	hijacked bool // set on HTTPStream is called
+	rejected bool // set once RejectRequest reset the stream
+	sentInfo bool // set once a 1xx response was sent
 
 	logger *slog.Logger
 }
@@ -86,6 +90,9 @@ func (w *responseWriter) Header() http.Header {
 }
 
 func (w *responseWriter) WriteHeader(status int) {
+	if w.rejected {
+		return
+	}
 	// HEADERS can't be sent after the caller started sending DATA on the stream
 	if w.hijacked {
 		panic("http3: WriteHeader called after HTTPStream")
@@ -102,6 +109,7 @@ func (w *responseWriter) WriteHeader(status int) {
 
 	// immediately write 1xx headers
 	if status < 200 {
+		w.sentInfo = true
 		// WriteHeader can't return an error, so a failed informational header isn't resumed
 		if err := w.writeHeader(status); err != nil {
 			w.buf = nil
@@ -147,6 +155,9 @@ func (w *responseWriter) sniffContentType(p []byte) {
 }
 
 func (w *responseWriter) Write(p []byte) (int, error) {
+	if w.rejected {
+		return 0, errRequestRejected
+	}
 	if w.hijacked {
 		return 0, http.ErrHijacked
 	}
@@ -276,6 +287,9 @@ func (w *responseWriter) encodeHeader(status int) ([]byte, error) {
 }
 
 func (w *responseWriter) FlushError() error {
+	if w.rejected {
+		return errRequestRejected
+	}
 	if !w.headerComplete {
 		w.WriteHeader(http.StatusOK)
 	}
@@ -359,6 +373,9 @@ func (w *responseWriter) writeTrailers() error {
 }
 
 func (w *responseWriter) HTTPStream() (*Stream, error) {
+	if w.rejected {
+		return nil, errRequestRejected
+	}
 	if w.numWritten > 0 {
 		return nil, errors.New("http3: invalid use of HTTPStream after writing the response body")
 	}
@@ -370,6 +387,19 @@ func (w *responseWriter) HTTPStream() (*Stream, error) {
 	}
 	w.hijacked = true
 	return w.str, nil
+}
+
+// RejectRequest resets an unprocessed request without flushing response headers.
+// It fails once any response, including a 1xx, was sent. Afterwards WriteHeader
+// does nothing and Write fails.
+func (w *responseWriter) RejectRequest() error {
+	if w.headerComplete || w.sentInfo || w.hijacked || w.rejected {
+		return http.ErrNotSupported
+	}
+	w.rejected = true
+	w.str.CancelRead(quic.StreamErrorCode(ErrCodeRequestRejected))
+	w.str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestRejected))
+	return nil
 }
 
 func (w *responseWriter) wasStreamHijacked() bool { return w.hijacked }

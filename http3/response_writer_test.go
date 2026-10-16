@@ -24,6 +24,35 @@ type testResponseWriter struct {
 	buf           *bytes.Buffer
 }
 
+func TestResponseWriterRejectRequest(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	str := NewMockDatagramStream(ctrl)
+	str.EXPECT().StreamID().Return(quic.StreamID(0)).AnyTimes()
+	str.EXPECT().CancelRead(quic.StreamErrorCode(ErrCodeRequestRejected))
+	str.EXPECT().CancelWrite(quic.StreamErrorCode(ErrCodeRequestRejected))
+	// No Write expectation: rejecting must not flush a successful HEADERS frame.
+	w := newResponseWriter(newStream(str, nil, nil, nil, nil), nil, false, slog.Default())
+	require.NoError(t, w.RejectRequest())
+	require.ErrorIs(t, w.RejectRequest(), http.ErrNotSupported)
+	// A late error response, like http.Error from a wrapping handler, is discarded.
+	require.NotPanics(t, func() { http.Error(w, "late", http.StatusBadGateway) })
+	_, err := w.Write([]byte("late"))
+	require.Error(t, err)
+	require.Error(t, w.FlushError())
+	_, err = w.HTTPStream()
+	require.Error(t, err)
+
+	w = newResponseWriter(newStream(str, nil, nil, nil, nil), nil, false, slog.Default())
+	w.WriteHeader(http.StatusOK)
+	require.ErrorIs(t, w.RejectRequest(), http.ErrNotSupported)
+
+	// A 1xx response shows the request was processed.
+	str.EXPECT().Write(gomock.Any()).DoAndReturn(func(b []byte) (int, error) { return len(b), nil })
+	w = newResponseWriter(newStream(str, nil, nil, nil, nil), nil, false, slog.Default())
+	w.WriteHeader(http.StatusEarlyHints)
+	require.ErrorIs(t, w.RejectRequest(), http.ErrNotSupported)
+}
+
 func (rw *testResponseWriter) DecodeHeaders(t *testing.T, idx int) map[string][]string {
 	t.Helper()
 

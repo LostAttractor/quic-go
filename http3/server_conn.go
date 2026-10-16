@@ -244,7 +244,7 @@ func (c *RawServerConn) handleRequestStream(str *stateTrackingStream) {
 		handler.ServeHTTP(r, req)
 	}()
 
-	if r.wasStreamHijacked() {
+	if r.wasStreamHijacked() || r.rejected {
 		return
 	}
 
