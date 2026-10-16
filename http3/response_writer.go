@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3/qlog"
 	"github.com/quic-go/qpack"
-
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -45,7 +45,7 @@ type responseWriter struct {
 	isHead         bool
 	trailerWritten bool // set once the response trailers has been serialized to the stream
 
-	hijacked bool // set on HTTPStream is called
+	hijacked bool // stream taken over or explicitly rejected
 
 	logger *slog.Logger
 }
@@ -337,6 +337,18 @@ func (w *responseWriter) HTTPStream() *Stream {
 	w.hijacked = true
 	w.Flush()
 	return w.str
+}
+
+// RejectRequest resets an unprocessed request without flushing response headers.
+// The handler must return or abort without writing a response afterwards.
+func (w *responseWriter) RejectRequest() error {
+	if w.headerComplete || w.hijacked {
+		return http.ErrNotSupported
+	}
+	w.hijacked = true
+	w.str.CancelRead(quic.StreamErrorCode(ErrCodeRequestRejected))
+	w.str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestRejected))
+	return nil
 }
 
 func (w *responseWriter) wasStreamHijacked() bool { return w.hijacked }

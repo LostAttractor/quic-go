@@ -22,6 +22,23 @@ type testResponseWriter struct {
 	buf           *bytes.Buffer
 }
 
+func TestResponseWriterRejectRequest(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	str := NewMockDatagramStream(ctrl)
+	str.EXPECT().StreamID().Return(quic.StreamID(0)).AnyTimes()
+	str.EXPECT().CancelRead(quic.StreamErrorCode(ErrCodeRequestRejected))
+	str.EXPECT().CancelWrite(quic.StreamErrorCode(ErrCodeRequestRejected))
+	// No Write expectation: rejecting must not flush a successful HEADERS frame.
+	w := newResponseWriter(newStream(str, nil, nil, nil, nil), nil, false, slog.Default())
+	require.NoError(t, w.RejectRequest())
+	require.True(t, w.wasStreamHijacked())
+	require.ErrorIs(t, w.RejectRequest(), http.ErrNotSupported)
+
+	w = newResponseWriter(newStream(str, nil, nil, nil, nil), nil, false, slog.Default())
+	w.WriteHeader(http.StatusOK)
+	require.ErrorIs(t, w.RejectRequest(), http.ErrNotSupported)
+}
+
 func (rw *testResponseWriter) DecodeHeaders(t *testing.T, idx int) map[string][]string {
 	t.Helper()
 
