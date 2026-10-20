@@ -481,3 +481,43 @@ func testConnDatagramFailures(t *testing.T, datagram []byte) {
 		t.Fatal("timeout waiting for close")
 	}
 }
+
+func TestConnIdleTimeoutTracksBothStreamDirections(t *testing.T) {
+	for _, first := range []string{"send", "receive"} {
+		t.Run(first, func(t *testing.T) {
+			client, _ := newConnPair(t)
+			conn := newRawConn(client, false, func() {}, nil, nil, nil)
+			conn.setIdleTimeout(100 * time.Millisecond)
+			// Each new stream cancels the old idle timer. Ending only one side must
+			// preserve the other side for delayed responses and duplex uploads.
+			for range 2 {
+				stream, err := client.OpenStream()
+				require.NoError(t, err)
+				tracked := conn.TrackStream(stream)
+				if first == "send" {
+					require.NoError(t, tracked.Close())
+				} else {
+					tracked.CancelRead(0)
+				}
+				select {
+				case <-client.Context().Done():
+					t.Fatal("idle timeout interrupted half-closed request")
+				case <-time.After(200 * time.Millisecond):
+				}
+				if first == "send" {
+					tracked.CancelRead(0)
+				} else {
+					require.NoError(t, tracked.Close())
+				}
+			}
+			select {
+			case <-client.Context().Done():
+				var closed *quic.ApplicationError
+				require.ErrorAs(t, context.Cause(client.Context()), &closed)
+				require.Equal(t, quic.ApplicationErrorCode(ErrCodeNoError), closed.ErrorCode)
+			case <-time.After(time.Second):
+				t.Fatal("idle connection retained")
+			}
+		})
+	}
+}

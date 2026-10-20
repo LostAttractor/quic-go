@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/daeuniverse/quic-go"
 	"github.com/daeuniverse/quic-go/http3/qlog"
@@ -32,8 +33,10 @@ type rawConn struct {
 
 	enableDatagrams bool
 
-	streamMx sync.Mutex
-	streams  map[quic.StreamID]*stateTrackingStream
+	streamMx    sync.Mutex
+	streams     map[quic.StreamID]*stateTrackingStream
+	idleTimeout time.Duration
+	idleTimer   *time.Timer
 
 	rcvdControlStr      atomic.Bool
 	rcvdQPACKEncoderStr atomic.Bool
@@ -117,6 +120,7 @@ func (c *rawConn) TrackStream(str *quic.Stream) *stateTrackingStream {
 	hstr := newStateTrackingStream(str, c, func(b []byte) error { return c.sendDatagram(str.StreamID(), b) })
 
 	c.streamMx.Lock()
+	c.stopIdleTimerLocked()
 	c.streams[str.StreamID()] = hstr
 	c.qloggerWG.Add(1)
 	c.streamMx.Unlock()
@@ -150,8 +154,56 @@ func (c *rawConn) clearStream(id quic.StreamID) {
 		c.qloggerWG.Done()
 	}
 	if len(c.streams) == 0 {
+		c.startIdleTimerLocked()
 		c.onStreamsEmpty()
 	}
+}
+
+// Configure before publishing a client connection. HTTP/3 control streams and
+// QUIC PINGs do not count as application activity. Keep the timer with stream
+// ownership so it also covers connections removed from the transport's cache.
+func (c *rawConn) setIdleTimeout(timeout time.Duration) {
+	if timeout <= 0 {
+		return
+	}
+	c.streamMx.Lock()
+	c.idleTimeout = timeout
+	if len(c.streams) == 0 {
+		c.startIdleTimerLocked()
+	}
+	c.streamMx.Unlock()
+	context.AfterFunc(c.conn.Context(), func() {
+		c.streamMx.Lock()
+		c.stopIdleTimerLocked()
+		c.streamMx.Unlock()
+	})
+}
+
+func (c *rawConn) stopIdleTimerLocked() {
+	if c.idleTimer != nil {
+		c.idleTimer.Stop()
+		c.idleTimer = nil
+	}
+}
+
+func (c *rawConn) startIdleTimerLocked() {
+	c.stopIdleTimerLocked()
+	if c.idleTimeout == 0 || c.conn.Context().Err() != nil {
+		return
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(c.idleTimeout, func() {
+		c.streamMx.Lock()
+		defer c.streamMx.Unlock()
+		// A fired callback can outlive Stop. It must not close a newly used
+		// connection or consume the next idle interval after that use.
+		if c.idleTimer != timer {
+			return
+		}
+		c.idleTimer = nil
+		c.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeNoError), "idle timeout")
+	})
+	c.idleTimer = timer
 }
 
 func (c *rawConn) hasActiveStreams() bool {
