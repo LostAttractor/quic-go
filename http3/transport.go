@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/net/http/httpguts"
 
@@ -72,6 +73,12 @@ type Transport struct {
 	// If nil, reasonable default values will be used.
 	QUICConfig *quic.Config
 
+	// IdleConnTimeout bounds how long a connection without active request
+	// streams is retained, independently of QUIC keep-alive packets. A stream
+	// stays active until both its upload and response have finished.
+	// Zero disables this timeout.
+	IdleConnTimeout time.Duration
+
 	// Dial specifies an optional dial function for creating QUIC
 	// connections for requests.
 	// If [Transport.Dial] is nil, a [net.UDPConn] will be created at the first request
@@ -129,7 +136,7 @@ var (
 func (t *Transport) init() error {
 	if t.newClientConn == nil {
 		t.newClientConn = func(conn *quic.Conn) clientConn {
-			return newClientConn(
+			c := newClientConn(
 				conn,
 				t.EnableDatagrams,
 				t.AdditionalSettings,
@@ -137,6 +144,8 @@ func (t *Transport) init() error {
 				t.DisableCompression,
 				t.Logger,
 			)
+			c.rawConn.setIdleTimeout(t.IdleConnTimeout)
+			return c
 		}
 	}
 	if t.QUICConfig == nil {
@@ -230,7 +239,7 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 	}
 
 	if cl.dialErr != nil {
-		t.removeClient(hostname)
+		t.removeClient(hostname, cl)
 		return nil, cl.dialErr
 	}
 	traceGotConn(trace, cl.conn, isReused)
@@ -246,7 +255,7 @@ func (t *Transport) doRoundTripOpt(req *http.Request, opt RoundTripOpt, isRetrie
 			return nil, err
 		}
 
-		t.removeClient(hostname)
+		t.removeClient(hostname, cl)
 		req, err = canRetryRequest(err, req)
 		if err != nil {
 			return nil, err
@@ -324,6 +333,9 @@ func (t *Transport) getClient(ctx context.Context, hostname string, onlyCached b
 			}
 			cl.conn = conn
 			cl.clientConn = rt
+			// A closed connection, e.g. reclaimed after IdleConnTimeout, must not be
+			// handed to the next request.
+			context.AfterFunc(conn.Context(), func() { t.removeClient(hostname, cl) })
 		}()
 		t.clients[hostname] = cl
 	}
@@ -419,13 +431,14 @@ func (t *Transport) resolveUDPAddr(ctx context.Context, network, addr string) (*
 	return &net.UDPAddr{IP: ip.IP, Port: port, Zone: ip.Zone}, nil
 }
 
-func (t *Transport) removeClient(hostname string) {
+// removeClient removes cl only if it is still cached, so that a request
+// failing on an old connection cannot drop the replacement another request dialed.
+func (t *Transport) removeClient(hostname string, cl *roundTripperWithCount) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
-	if t.clients == nil {
-		return
+	if t.clients[hostname] == cl {
+		delete(t.clients, hostname)
 	}
-	delete(t.clients, hostname)
 }
 
 // NewClientConn creates a new HTTP/3 client connection on top of a QUIC connection.
@@ -443,6 +456,7 @@ func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
 		t.DisableCompression,
 		t.Logger,
 	)
+	c.rawConn.setIdleTimeout(t.IdleConnTimeout)
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())
@@ -460,7 +474,7 @@ func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
 // of the stream accept loops by calling [RawClientConn.HandleUnidirectionalStream] for incoming
 // unidirectional streams and [ClientConn.HandleBidirectionalStream] for incoming bidirectional streams.
 func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
-	return &RawClientConn{
+	c := &RawClientConn{
 		ClientConn: newClientConn(
 			conn,
 			t.EnableDatagrams,
@@ -470,6 +484,8 @@ func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
 			t.Logger,
 		),
 	}
+	c.rawConn.setIdleTimeout(t.IdleConnTimeout)
+	return c
 }
 
 // Close closes the QUIC connections that this Transport has used.

@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -600,4 +602,100 @@ func TestTransportClose(t *testing.T) {
 	require.NoError(t, tr.Close())
 	_, err = tr.RoundTrip(req)
 	require.ErrorIs(t, err, ErrTransportClosed)
+}
+
+// A request failing on a stale connection must not evict the replacement that
+// a concurrent retry dialed.
+func TestTransportRetryKeepsReplacementConnection(t *testing.T) {
+	conn, _ := newConnPair(t)
+	mockCtrl := gomock.NewController(t)
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	replaced := make(chan struct{})
+	stale := NewMockClientConn(mockCtrl)
+	stale.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(func(r *http.Request) (*http.Response, error) {
+		arrived.Done()
+		arrived.Wait()
+		if r.URL.Path == "/2" {
+			<-replaced
+		}
+		return nil, &errConnUnusable{errors.New("closed")}
+	}).Times(2)
+	respond := func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/1" {
+			close(replaced)
+		}
+		return &http.Response{Request: r, Body: http.NoBody}, nil
+	}
+	fresh := NewMockClientConn(mockCtrl)
+	fresh.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(respond).AnyTimes()
+	extra := NewMockClientConn(mockCtrl)
+	extra.EXPECT().RoundTrip(gomock.Any()).DoAndReturn(respond).AnyTimes()
+	var dials atomic.Int32
+	tr := &Transport{
+		Dial: func(context.Context, string, *tls.Config, *quic.Config) (*quic.Conn, error) { return conn, nil },
+		newClientConn: func(*quic.Conn) clientConn {
+			return []clientConn{stale, fresh, extra}[min(dials.Add(1), 3)-1]
+		},
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := tr.RoundTrip(httptest.NewRequest(http.MethodGet, "https://quic-go.org/1", nil))
+		errs <- err
+	}()
+	go func() {
+		// Start the second request once the first has the stale connection.
+		assert.Eventually(t, func() bool { return dials.Load() == 1 }, time.Second, time.Millisecond)
+		_, err := tr.RoundTrip(httptest.NewRequest(http.MethodGet, "https://quic-go.org/2", nil))
+		errs <- err
+	}()
+	for range 2 {
+		require.NoError(t, <-errs)
+	}
+	require.EqualValues(t, 2, dials.Load(), "the second retry dialed again instead of reusing the replacement")
+}
+
+// After IdleConnTimeout reclaims a connection, the transport forgets it, and a
+// burst of requests shares one new connection.
+func TestTransportIdleReclaimDialsOnce(t *testing.T) {
+	ln, err := quic.ListenEarly(newUDPConnLocalhost(t), getTLSConfig(), &quic.Config{})
+	require.NoError(t, err)
+	srv := &Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+	})}
+	go srv.ServeListener(ln)
+	defer srv.Close()
+
+	var dials atomic.Int32
+	tr := &Transport{
+		TLSClientConfig: getTLSClientConfig(),
+		IdleConnTimeout: scaleDuration(50 * time.Millisecond),
+		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+			dials.Add(1)
+			return quic.DialAddrEarly(ctx, addr, tlsConf, conf)
+		},
+	}
+	defer tr.Close()
+	url := "https://" + ln.Addr().String() + "/"
+	get := func() error {
+		rsp, err := tr.RoundTrip(httptest.NewRequest(http.MethodGet, url, nil))
+		if err == nil {
+			rsp.Body.Close()
+		}
+		return err
+	}
+	require.NoError(t, get())
+	require.Eventually(t, func() bool {
+		tr.mutex.Lock()
+		defer tr.mutex.Unlock()
+		return len(tr.clients) == 0
+	}, scaleDuration(time.Second), time.Millisecond, "the reclaimed connection is still cached")
+
+	var wg sync.WaitGroup
+	for range 30 {
+		wg.Go(func() { assert.NoError(t, get()) })
+	}
+	wg.Wait()
+	require.EqualValues(t, 2, dials.Load())
 }
