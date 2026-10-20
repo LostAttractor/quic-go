@@ -174,6 +174,14 @@ func (c *ClientConn) openRequestStream(
 	}
 
 	hstr := c.rawConn.TrackStream(str)
+	// TrackStream serializes with idle closure. If the timer won after
+	// OpenStreamSync, fail before writing headers so RoundTrip can retry on
+	// a new connection without treating an unsent request as ambiguous.
+	if err := context.Cause(c.conn.Context()); err != nil {
+		hstr.CancelRead(quic.StreamErrorCode(ErrCodeRequestCanceled))
+		hstr.CancelWrite(quic.StreamErrorCode(ErrCodeRequestCanceled))
+		return nil, err
+	}
 	rsp := &http.Response{}
 	trace := httptrace.ContextClientTrace(ctx)
 	return newRequestStream(

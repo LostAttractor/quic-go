@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/net/http/httpguts"
 
@@ -72,6 +73,12 @@ type Transport struct {
 	// If nil, reasonable default values will be used.
 	QUICConfig *quic.Config
 
+	// IdleConnTimeout bounds how long a connection without active request
+	// streams is retained, independently of QUIC keep-alive packets. A stream
+	// stays active until both its upload and response have finished.
+	// Zero disables this timeout.
+	IdleConnTimeout time.Duration
+
 	// Dial specifies an optional dial function for creating QUIC
 	// connections for requests.
 	// If Dial is nil, a UDPConn will be created at the first request
@@ -127,7 +134,7 @@ var (
 func (t *Transport) init() error {
 	if t.newClientConn == nil {
 		t.newClientConn = func(conn *quic.Conn) clientConn {
-			return newClientConn(
+			c := newClientConn(
 				conn,
 				t.EnableDatagrams,
 				t.AdditionalSettings,
@@ -135,6 +142,8 @@ func (t *Transport) init() error {
 				t.DisableCompression,
 				t.Logger,
 			)
+			c.rawConn.setIdleTimeout(t.IdleConnTimeout)
+			return c
 		}
 	}
 	if t.QUICConfig == nil {
@@ -440,6 +449,7 @@ func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
 		t.DisableCompression,
 		t.Logger,
 	)
+	c.rawConn.setIdleTimeout(t.IdleConnTimeout)
 	go func() {
 		for {
 			str, err := conn.AcceptUniStream(context.Background())
@@ -457,7 +467,7 @@ func (t *Transport) NewClientConn(conn *quic.Conn) *ClientConn {
 // of the stream accept loops, by calling HandleUnidirectionalStream for incoming unidirectional
 // streams and HandleBidirectionalStream for incoming bidirectional streams.
 func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
-	return &RawClientConn{
+	c := &RawClientConn{
 		ClientConn: newClientConn(
 			conn,
 			t.EnableDatagrams,
@@ -467,6 +477,8 @@ func (t *Transport) NewRawClientConn(conn *quic.Conn) *RawClientConn {
 			t.Logger,
 		),
 	}
+	c.rawConn.setIdleTimeout(t.IdleConnTimeout)
+	return c
 }
 
 // Close closes the QUIC connections that this Transport has used.
