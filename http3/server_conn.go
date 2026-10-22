@@ -150,7 +150,7 @@ func (c *RawServerConn) handleRequestStream(str *stateTrackingStream) {
 	if qlogger != nil {
 		hfs = make([]qpack.HeaderField, 0, 16)
 	}
-	req, err := requestFromHeaders(decodeFn, maxHeaderBytes, &hfs)
+	parsedReq, err := requestFromHeaders(decodeFn, maxHeaderBytes, &hfs)
 	if qlogger != nil {
 		qlogParsedHeadersFrame(qlogger, str.StreamID(), hf, hfs, err)
 	}
@@ -172,6 +172,7 @@ func (c *RawServerConn) handleRequestStream(str *stateTrackingStream) {
 		return
 	}
 
+	req := &parsedReq.Request
 	connState := conn.ConnectionState().TLS
 	req.TLS = &connState
 	req.RemoteAddr = conn.RemoteAddr().String()
@@ -212,6 +213,7 @@ func (c *RawServerConn) handleRequestStream(str *stateTrackingStream) {
 	}
 
 	ctx, cancel := context.WithCancel(connCtx)
+	ctx = context.WithValue(ctx, RequestSchemeContextKey, parsedReq.scheme)
 	req = req.WithContext(ctx)
 	context.AfterFunc(str.Context(), cancel)
 

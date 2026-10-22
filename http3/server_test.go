@@ -520,6 +520,7 @@ func TestServerRequestContext(t *testing.T) {
 	}
 
 	require.Equal(t, s, requestContext.Value(ServerContextKey))
+	require.Equal(t, "https", requestContext.Value(RequestSchemeContextKey))
 	require.Equal(t, serverConn.LocalAddr(), requestContext.Value(http.LocalAddrContextKey))
 	require.Equal(t, serverConn.RemoteAddr(), requestContext.Value(RemoteAddrContextKey))
 	select {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/daeuniverse/quic-go/http3/qlog"
@@ -78,6 +79,7 @@ func TestRequestHeaderParsing(t *testing.T) {
 		scheme string
 	}{
 		{name: "regular path", path: "/foo", scheme: "https"},
+		{name: "http scheme", path: "/foo", scheme: "http"},
 		// see https://github.com/daeuniverse/quic-go/pull/1898
 		{name: "path starting with //", path: "//foo", scheme: "https"},
 		{name: "upper-case scheme", path: "/foo", scheme: "HTTPS"},
@@ -105,6 +107,7 @@ func TestRequestHeaderParsing(t *testing.T) {
 			require.Equal(t, "quic-go.net:443", req.Host)
 			require.Equal(t, tc.path, req.RequestURI)
 			require.Empty(t, req.URL.Scheme)
+			require.Equal(t, strings.ToLower(tc.scheme), req.scheme)
 		})
 	}
 }
@@ -126,6 +129,7 @@ func TestRequestHeaderParsingWithHostHeader(t *testing.T) {
 func TestRequestHeadersContentLength(t *testing.T) {
 	t.Run("no content length", func(t *testing.T) {
 		headers := []qpack.HeaderField{
+			{Name: ":scheme", Value: "https"},
 			{Name: ":path", Value: "/"},
 			{Name: ":authority", Value: "quic-go.net"},
 			{Name: ":method", Value: http.MethodGet},
@@ -137,6 +141,7 @@ func TestRequestHeadersContentLength(t *testing.T) {
 
 	t.Run("multiple content lengths", func(t *testing.T) {
 		headers := []qpack.HeaderField{
+			{Name: ":scheme", Value: "https"},
 			{Name: ":path", Value: "/"},
 			{Name: ":authority", Value: "quic-go.net"},
 			{Name: ":method", Value: http.MethodGet},
@@ -241,7 +246,7 @@ func TestRequestHeadersValidation(t *testing.T) {
 				{Name: ":authority", Value: "quic-go.net"},
 				{Name: ":method", Value: http.MethodGet},
 			},
-			err: ":path and :authority must not be empty",
+			err: ":scheme, :path and :authority must not be empty",
 		},
 		{
 			name: "missing :authority",
@@ -249,7 +254,16 @@ func TestRequestHeadersValidation(t *testing.T) {
 				{Name: ":path", Value: "/foo"},
 				{Name: ":method", Value: http.MethodGet},
 			},
-			err: ":path and :authority must not be empty",
+			err: ":scheme, :path and :authority must not be empty",
+		},
+		{
+			name: "missing :scheme",
+			headers: []qpack.HeaderField{
+				{Name: ":path", Value: "/foo"},
+				{Name: ":authority", Value: "quic-go.net"},
+				{Name: ":method", Value: http.MethodGet},
+			},
+			err: ":scheme, :path and :authority must not be empty",
 		},
 		{
 			name: "missing :method",
@@ -300,7 +314,7 @@ func TestRequestHeadersValidation(t *testing.T) {
 				{Name: ":method", Value: http.MethodGet},
 				{Name: "host", Value: "example.com"},
 			},
-			err: ":path and :authority must not be empty",
+			err: ":scheme, :path and :authority must not be empty",
 		},
 		{
 			name: "invalid :method",
@@ -341,6 +355,7 @@ func TestRequestHeadersValidation(t *testing.T) {
 		{
 			name: "invalid :protocol",
 			headers: []qpack.HeaderField{
+				{Name: ":scheme", Value: "https"},
 				{Name: ":path", Value: "/foo"},
 				{Name: ":authority", Value: "quic-go.net"},
 				{Name: ":method", Value: http.MethodGet},
@@ -351,6 +366,7 @@ func TestRequestHeadersValidation(t *testing.T) {
 		{
 			name: "empty :protocol",
 			headers: []qpack.HeaderField{
+				{Name: ":scheme", Value: "https"},
 				{Name: ":path", Value: "/foo"},
 				{Name: ":authority", Value: "quic-go.net"},
 				{Name: ":method", Value: http.MethodGet},
@@ -361,6 +377,7 @@ func TestRequestHeadersValidation(t *testing.T) {
 		{
 			name: "invalid :path",
 			headers: []qpack.HeaderField{
+				{Name: ":scheme", Value: "https"},
 				{Name: ":path", Value: "invalid path"},
 				{Name: ":authority", Value: "quic-go.net"},
 				{Name: ":method", Value: http.MethodGet},
@@ -435,6 +452,7 @@ func TestRequestHeadersValidation(t *testing.T) {
 
 func TestCookieHeader(t *testing.T) {
 	headers := []qpack.HeaderField{
+		{Name: ":scheme", Value: "https"},
 		{Name: ":path", Value: "/foo"},
 		{Name: ":authority", Value: "quic-go.net"},
 		{Name: ":method", Value: http.MethodGet},
@@ -450,6 +468,7 @@ func TestCookieHeader(t *testing.T) {
 
 func TestHeadersConcatenation(t *testing.T) {
 	headers := []qpack.HeaderField{
+		{Name: ":scheme", Value: "https"},
 		{Name: ":path", Value: "/foo"},
 		{Name: ":authority", Value: "quic-go.net"},
 		{Name: ":method", Value: http.MethodGet},
