@@ -242,7 +242,12 @@ func parseTrailers(decodeFn qpack.DecodeFunc, sizeLimit int, headerFields *[]qpa
 	return h, nil
 }
 
-func requestFromHeaders(decodeFn qpack.DecodeFunc, sizeLimit int, headerFields *[]qpack.HeaderField) (*http.Request, error) {
+type parsedRequest struct {
+	http.Request
+	scheme string
+}
+
+func requestFromHeaders(decodeFn qpack.DecodeFunc, sizeLimit int, headerFields *[]qpack.HeaderField) (*parsedRequest, error) {
 	hdr, err := parseHeaders(decodeFn, true, sizeLimit, headerFields)
 	if err != nil {
 		return nil, err
@@ -337,7 +342,7 @@ func requestFromHeaders(decodeFn qpack.DecodeFunc, sizeLimit int, headerFields *
 		requestURI = hdr.Path
 	}
 
-	req := &http.Request{
+	req := &parsedRequest{Request: http.Request{
 		Method:        hdr.Method,
 		URL:           u,
 		Proto:         protocol,
@@ -348,7 +353,7 @@ func requestFromHeaders(decodeFn qpack.DecodeFunc, sizeLimit int, headerFields *
 		ContentLength: hdr.ContentLength,
 		Host:          hdr.Authority,
 		RequestURI:    requestURI,
-	}
+	}, scheme: hdr.Scheme}
 	req.Trailer = extractAnnouncedTrailers(req.Header)
 	return req, nil
 }

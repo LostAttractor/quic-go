@@ -114,6 +114,11 @@ func (k *contextKey) String() string { return "quic-go/http3 context value " + k
 // type [*Server].
 var ServerContextKey = &contextKey{"http3-server"}
 
+// RequestSchemeContextKey exposes the normalized :scheme pseudo-header as a
+// string in server request contexts. It is empty for ordinary CONNECT requests.
+// URL.Scheme remains empty, matching net/http server requests.
+var RequestSchemeContextKey = &contextKey{"request-scheme"}
+
 // RemoteAddrContextKey is a context key. It can be used in
 // HTTP handlers with [context.Context.Value] to access the remote
 // address of the connection. The associated value will be of
