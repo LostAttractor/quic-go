@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/daeuniverse/quic-go/http3/qlog"
@@ -78,6 +79,7 @@ func TestRequestHeaderParsing(t *testing.T) {
 		scheme string
 	}{
 		{name: "regular path", path: "/foo", scheme: "https"},
+		{name: "http scheme", path: "/foo", scheme: "http"},
 		// see https://github.com/daeuniverse/quic-go/pull/1898
 		{name: "path starting with //", path: "//foo", scheme: "https"},
 		{name: "upper-case scheme", path: "/foo", scheme: "HTTPS"},
@@ -105,6 +107,7 @@ func TestRequestHeaderParsing(t *testing.T) {
 			require.Equal(t, "quic-go.net:443", req.Host)
 			require.Equal(t, tc.path, req.RequestURI)
 			require.Empty(t, req.URL.Scheme)
+			require.Equal(t, strings.ToLower(tc.scheme), req.scheme)
 		})
 	}
 }
