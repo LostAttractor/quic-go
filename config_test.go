@@ -2,11 +2,14 @@ package quic
 
 import (
 	"context"
+	"crypto/tls"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/daeuniverse/quic-go/internal/protocol"
+	"github.com/daeuniverse/quic-go/internal/testdata"
 	"github.com/daeuniverse/quic-go/qlogwriter"
 	"github.com/daeuniverse/quic-go/quicvarint"
 
@@ -189,6 +192,38 @@ func TestConfigDefaultValues(t *testing.T) {
 	// Keep zero to distinguish the default from an explicitly configured floor.
 	require.Zero(t, c.InitialPacketSize)
 	require.Equal(t, protocol.ByteCount(protocol.InitialPacketSize), c.initialPacketSize())
+}
+
+// Dial and Listen populate their configs; the callback must survive and
+// report the peer's limits.
+func TestConfigCapabilityCallbackReportsPeerLimits(t *testing.T) {
+	serverTLS := testdata.GetTLSConfig()
+	serverTLS.NextProtos = []string{"capability"}
+	server := &Transport{Conn: newUDPConnLocalhost(t)}
+	defer server.Close()
+	ln, err := server.Listen(serverTLS, &Config{MaxIncomingStreams: 7, MaxIncomingUniStreams: 5})
+	require.NoError(t, err)
+	defer ln.Close()
+	var mu sync.Mutex
+	available := map[StreamType]int64{}
+	client := &Transport{Conn: newUDPConnLocalhost(t)}
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := client.Dial(ctx, ln.Addr(), &tls.Config{RootCAs: testdata.GetRootCA(), ServerName: "localhost", NextProtos: []string{"capability"}}, &Config{
+		CapabilityCallback: func(streamType StreamType, n int64) {
+			mu.Lock()
+			defer mu.Unlock()
+			available[streamType] = n
+		},
+	})
+	require.NoError(t, err)
+	defer conn.CloseWithError(0, "")
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return available[StreamTypeBidi] == 7 && available[StreamTypeUni] == 5
+	}, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestConfigZeroLimits(t *testing.T) {
