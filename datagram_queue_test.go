@@ -106,7 +106,16 @@ func TestDatagramQueueReceiveCanceledContext(t *testing.T) {
 	require.Equal(t, []byte("foo"), data)
 }
 
+// setDatagramDropped records DatagramDropped calls for the test.
+func setDatagramDropped(t *testing.T) *[]bool {
+	var dropped []bool
+	DatagramDropped = func(sending bool) { dropped = append(dropped, sending) }
+	t.Cleanup(func() { DatagramDropped = nil })
+	return &dropped
+}
+
 func TestDatagramQueueReceiveOverflow(t *testing.T) {
+	dropped := setDatagramDropped(t)
 	qlogger := &events.Recorder{}
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger, qlogger)
 	for range maxDatagramRcvQueueLen {
@@ -121,6 +130,7 @@ func TestDatagramQueueReceiveOverflow(t *testing.T) {
 		Raw:       qlog.RawInfo{Length: len(f.Data)},
 		Trigger:   "buffer_full",
 	}}, qlogger.Events())
+	require.Equal(t, []bool{false}, *dropped)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
