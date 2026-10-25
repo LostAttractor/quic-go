@@ -16,6 +16,12 @@ const (
 	maxDatagramRcvQueueLen  = 128
 )
 
+// DatagramDropped, if set during program initialization, is called for every
+// DATAGRAM frame a connection discards: a received one its full receive queue
+// has no room for (sending false), or a queued one too large to ever be sent
+// (sending true). It runs on the connection's goroutine and must not block.
+var DatagramDropped func(sending bool)
+
 type datagramQueue struct {
 	sendMx    sync.Mutex
 	sendQueue ringbuffer.RingBuffer[*wire.DatagramFrame]
@@ -119,6 +125,9 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	h.rcvMx.Unlock()
 
 	if !queued {
+		if DatagramDropped != nil {
+			DatagramDropped(false)
+		}
 		if h.logger.Debug() {
 			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
 		}

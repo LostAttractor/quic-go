@@ -764,6 +764,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	// If a packet contains an ACK, and doesn't have enough space for the DATAGRAM frame,
 	// it should be skipped. It will be packed in the next packet.
 	const maxPacketSize = 1000
+	dropped := setDatagramDropped(t)
 	mockCtrl := gomock.NewController(t)
 	tp := newTestPacketPacker(t, mockCtrl, protocol.PerspectiveServer)
 	tp.ackFramer.EXPECT().GetAckFrame(protocol.Encryption1RTT, gomock.Any(), true).Return(&wire.AckFrame{AckRanges: []wire.AckRange{{Largest: 100}}})
@@ -781,6 +782,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	require.NotEmpty(t, buffer.Data)
 	require.Equal(t, f, tp.datagramQueue.Peek()) // make sure the frame is still there
 	require.Empty(t, tp.Recorder.Events(qlog.DatagramDropped{}))
+	require.Empty(t, *dropped)
 
 	// Now try packing again, but with a smaller packet size.
 	// The DATAGRAM frame should now be dropped, as we can't expect to ever be able tosend it out.
@@ -798,6 +800,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 		Raw:       qlog.RawInfo{Length: len(f.Data), PayloadLength: qlog.OmitLength},
 		Trigger:   "too_large",
 	}}, tp.Recorder.Events(qlog.DatagramDropped{}))
+	require.Equal(t, []bool{true}, *dropped)
 }
 
 // Control frames and retransmissions are packed before DATAGRAM frames,
