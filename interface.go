@@ -209,6 +209,11 @@ type Config struct {
 	// It runs synchronously under the stream map lock and must not block or
 	// call back into the connection. Different stream types may report concurrently.
 	CapabilityCallback func(streamType StreamType, available int64)
+
+	// DatagramDropped, if set, is called with the payload size of every DATAGRAM
+	// frame the connection discards. It runs on the connection's goroutine and
+	// must not block.
+	DatagramDropped func(reason DatagramDropReason, size int)
 }
 
 // ClientInfo contains information about an incoming connection attempt.

@@ -16,6 +16,19 @@ const (
 	maxDatagramRcvQueueLen  = 128
 )
 
+// A DatagramDropReason says why a connection discarded a DATAGRAM frame,
+// as reported to [Config.DatagramDropped].
+type DatagramDropReason uint8
+
+const (
+	// DatagramDropReceiveQueueFull: a received datagram found the receive queue full.
+	DatagramDropReceiveQueueFull DatagramDropReason = iota
+	// DatagramDropTooLarge: a queued datagram fits in no packet the connection can send.
+	DatagramDropTooLarge
+	// DatagramDropClosed: a queued datagram was still unsent when the connection closed.
+	DatagramDropClosed
+)
+
 type datagramQueue struct {
 	sendMx    sync.Mutex
 	sendQueue ringbuffer.RingBuffer[*wire.DatagramFrame]
@@ -29,6 +42,7 @@ type datagramQueue struct {
 	closed   chan struct{}
 
 	hasData func()
+	dropped func(DatagramDropReason, int) // Config.DatagramDropped
 
 	logger  utils.Logger
 	qlogger qlogwriter.Recorder
@@ -119,6 +133,7 @@ func (h *datagramQueue) HandleDatagramFrame(f *wire.DatagramFrame) {
 	h.rcvMx.Unlock()
 
 	if !queued {
+		h.drop(DatagramDropReceiveQueueFull, len(f.Data))
 		if h.logger.Debug() {
 			h.logger.Debugf("Discarding received DATAGRAM frame (%d bytes payload)", len(f.Data))
 		}
@@ -158,6 +173,19 @@ func (h *datagramQueue) Receive(ctx context.Context) ([]byte, error) {
 }
 
 func (h *datagramQueue) CloseWithError(e error) {
+	h.sendMx.Lock()
 	h.closeErr = e
 	close(h.closed)
+	h.sendMx.Unlock()
+	// Nothing is queued or sent anymore: report what is left as dropped.
+	for f := h.Peek(); f != nil; f = h.Peek() {
+		h.Pop()
+		h.drop(DatagramDropClosed, len(f.Data))
+	}
+}
+
+func (h *datagramQueue) drop(reason DatagramDropReason, size int) {
+	if h.dropped != nil {
+		h.dropped(reason, size)
+	}
 }

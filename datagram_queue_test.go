@@ -106,9 +106,22 @@ func TestDatagramQueueReceiveCanceledContext(t *testing.T) {
 	require.Equal(t, []byte("foo"), data)
 }
 
+type datagramDrop struct {
+	reason DatagramDropReason
+	size   int
+}
+
+// recordDatagramDrops records the queue's drop reports.
+func recordDatagramDrops(queue *datagramQueue) *[]datagramDrop {
+	var dropped []datagramDrop
+	queue.dropped = func(reason DatagramDropReason, size int) { dropped = append(dropped, datagramDrop{reason, size}) }
+	return &dropped
+}
+
 func TestDatagramQueueReceiveOverflow(t *testing.T) {
 	qlogger := &events.Recorder{}
 	queue := newDatagramQueue(func() {}, utils.DefaultLogger, qlogger)
+	dropped := recordDatagramDrops(queue)
 	for range maxDatagramRcvQueueLen {
 		queue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte("queued")})
 	}
@@ -121,6 +134,7 @@ func TestDatagramQueueReceiveOverflow(t *testing.T) {
 		Raw:       qlog.RawInfo{Length: len(f.Data), PayloadLength: qlog.OmitLength},
 		Trigger:   "buffer_full",
 	}}, qlogger.Events())
+	require.Equal(t, []datagramDrop{{DatagramDropReceiveQueueFull, len(f.Data)}}, *dropped)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -234,4 +248,31 @@ func TestDatagramQueueAddAfterClose(t *testing.T) {
 	queue.CloseWithError(assert.AnError)
 	require.ErrorIs(t, queue.Add(&wire.DatagramFrame{Data: []byte("foo")}), assert.AnError)
 	require.Nil(t, queue.Peek())
+}
+
+func TestDatagramQueueCloseReportsUnsent(t *testing.T) {
+	queue := newDatagramQueue(func() {}, utils.DefaultLogger, nil)
+	dropped := recordDatagramDrops(queue)
+	require.NoError(t, queue.Add(&wire.DatagramFrame{Data: []byte("foo")}))
+	require.NoError(t, queue.Add(&wire.DatagramFrame{Data: []byte("foobar")}))
+	queue.CloseWithError(assert.AnError)
+	require.Equal(t, []datagramDrop{{DatagramDropClosed, 3}, {DatagramDropClosed, 6}}, *dropped)
+	require.Nil(t, queue.Peek())
+}
+
+// Dial, DialEarly and Listen populate their configs; each connection reports
+// its own drops to the callback of its config.
+func TestConnectionReportsDatagramDrops(t *testing.T) {
+	var dropped []datagramDrop
+	tc := newClientTestConnection(t, nil, &Config{
+		DisablePathMTUDiscovery: true,
+		EnableDatagrams:         true,
+		DatagramDropped: func(reason DatagramDropReason, size int) {
+			dropped = append(dropped, datagramDrop{reason, size})
+		},
+	}, false)
+	for range maxDatagramRcvQueueLen + 1 {
+		tc.conn.datagramQueue.HandleDatagramFrame(&wire.DatagramFrame{Data: []byte("foo")})
+	}
+	require.Equal(t, []datagramDrop{{DatagramDropReceiveQueueFull, 3}}, dropped)
 }

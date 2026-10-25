@@ -729,6 +729,7 @@ func (p *packetPacker) composeNextPacket(
 				// Discard this frame. There's no point in retrying this in the next packet,
 				// as it's unlikely that the available packet size will increase.
 				p.datagramQueue.Pop()
+				p.datagramQueue.drop(DatagramDropTooLarge, len(f.Data))
 				if p.qlogger != nil {
 					p.qlogger.RecordEvent(qlog.DatagramDropped{
 						Direction: qlog.DirectionSending,

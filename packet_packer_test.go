@@ -766,6 +766,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	const maxPacketSize = 1000
 	mockCtrl := gomock.NewController(t)
 	tp := newTestPacketPacker(t, mockCtrl, protocol.PerspectiveServer)
+	dropped := recordDatagramDrops(tp.datagramQueue)
 	tp.ackFramer.EXPECT().GetAckFrame(protocol.Encryption1RTT, gomock.Any(), true).Return(&wire.AckFrame{AckRanges: []wire.AckRange{{Largest: 100}}})
 	tp.pnManager.EXPECT().PeekPacketNumber(protocol.PacketNumberSpaceAppData).Return(protocol.PacketNumber(0x42), protocol.PacketNumberLen2)
 	tp.pnManager.EXPECT().PopPacketNumber(protocol.PacketNumberSpaceAppData).Return(protocol.PacketNumber(0x42))
@@ -781,6 +782,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 	require.NotEmpty(t, buffer.Data)
 	require.Equal(t, f, tp.datagramQueue.Peek()) // make sure the frame is still there
 	require.Empty(t, tp.Recorder.Events(qlog.DatagramDropped{}))
+	require.Empty(t, *dropped)
 
 	// Now try packing again, but with a smaller packet size.
 	// The DATAGRAM frame should now be dropped, as we can't expect to ever be able tosend it out.
@@ -798,6 +800,7 @@ func TestPackLargeDatagramFrame(t *testing.T) {
 		Raw:       qlog.RawInfo{Length: len(f.Data), PayloadLength: qlog.OmitLength},
 		Trigger:   "too_large",
 	}}, tp.Recorder.Events(qlog.DatagramDropped{}))
+	require.Equal(t, []datagramDrop{{DatagramDropTooLarge, len(f.Data)}}, *dropped)
 }
 
 // Control frames and retransmissions are packed before DATAGRAM frames,

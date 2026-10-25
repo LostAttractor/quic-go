@@ -130,5 +130,6 @@ func populateConfig(config *Config) *Config {
 		Allow0RTT:                        config.Allow0RTT,
 		Tracer:                           config.Tracer,
 		CapabilityCallback:               config.CapabilityCallback,
+		DatagramDropped:                  config.DatagramDropped,
 	}
 }
