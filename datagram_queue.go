@@ -1,7 +1,9 @@
 package quic
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/daeuniverse/quic-go/internal/utils"
@@ -14,6 +16,13 @@ import (
 const (
 	maxDatagramSendQueueLen = 32
 	maxDatagramRcvQueueLen  = 128
+)
+
+var (
+	// ErrDatagramQueueFull means nonblocking admission accepted no datagram.
+	ErrDatagramQueueFull = errors.New("QUIC DATAGRAM send queue full")
+	// ErrDatagramBatchTooLarge means a batch exceeds the send queue, so it can never be admitted.
+	ErrDatagramBatchTooLarge = errors.New("QUIC DATAGRAM batch exceeds the send queue")
 )
 
 // A DatagramDropReason says why a connection discarded a DATAGRAM frame,
@@ -93,6 +102,31 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 		}
 		h.sendMx.Lock()
 	}
+}
+
+// TryAdd queues all of ps or none of them. It copies them only after
+// admission; a full queue never retains the caller.
+func (h *datagramQueue) TryAdd(ps ...[]byte) error {
+	if len(ps) > maxDatagramSendQueueLen {
+		return ErrDatagramBatchTooLarge
+	}
+	h.sendMx.Lock()
+	select {
+	case <-h.closed:
+		h.sendMx.Unlock()
+		return h.closeErr
+	default:
+	}
+	if h.sendQueue.Len()+len(ps) > maxDatagramSendQueueLen {
+		h.sendMx.Unlock()
+		return ErrDatagramQueueFull
+	}
+	for _, p := range ps {
+		h.sendQueue.PushBack(&wire.DatagramFrame{DataLenPresent: true, Data: bytes.Clone(p)})
+	}
+	h.sendMx.Unlock()
+	h.hasData()
+	return nil
 }
 
 // Peek gets the next DATAGRAM frame for sending.

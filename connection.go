@@ -3160,13 +3160,38 @@ func (c *Conn) recordStreamPriorityUpdated(id protocol.StreamID, urgency int8, i
 // In addition, a datagram may be dropped before being sent out if the available packet size suddenly decreases.
 // If the payload is too large to be sent at the current time, a [DatagramTooLargeError] is returned.
 func (c *Conn) SendDatagram(p []byte) error {
+	if err := c.checkDatagramSize(p); err != nil {
+		return err
+	}
+	return c.datagramQueue.Add(&wire.DatagramFrame{DataLenPresent: true, Data: bytes.Clone(p)})
+}
+
+// TrySendDatagram has SendDatagram's size and delivery semantics, but returns
+// ErrDatagramQueueFull without copying or accepting p when the send queue is full.
+// It never waits for queue space. A rejected datagram is not a connection failure;
+// the caller decides whether to retry or count it as dropped.
+func (c *Conn) TrySendDatagram(p []byte) error {
+	return c.TrySendDatagrams(p)
+}
+
+// TrySendDatagrams admits ps like TrySendDatagram, but all of them or none, so
+// that a fragmented message is never sent in part. It returns
+// ErrDatagramBatchTooLarge if ps exceeds the send queue, which holds 32 datagrams.
+func (c *Conn) TrySendDatagrams(ps ...[]byte) error {
+	for _, p := range ps {
+		if err := c.checkDatagramSize(p); err != nil {
+			return err
+		}
+	}
+	return c.datagramQueue.TryAdd(ps...)
+}
+
+func (c *Conn) checkDatagramSize(p []byte) error {
 	if !c.supportsDatagrams() {
 		return errors.New("datagram support disabled")
 	}
-
-	f := &wire.DatagramFrame{DataLenPresent: true}
-	// The payload size estimate is conservative.
-	// Under many circumstances we could send a few more bytes.
+	f := wire.DatagramFrame{DataLenPresent: true}
+	// Keep the same conservative size estimate for both admission methods.
 	maxDataLen := min(
 		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
@@ -3174,9 +3199,7 @@ func (c *Conn) SendDatagram(p []byte) error {
 	if protocol.ByteCount(len(p)) > maxDataLen {
 		return &DatagramTooLargeError{MaxDatagramPayloadSize: int64(maxDataLen)}
 	}
-	f.Data = make([]byte, len(p))
-	copy(f.Data, p)
-	return c.datagramQueue.Add(f)
+	return nil
 }
 
 // SetCongestionControl replaces the current congestion control algorithm with a new one.
