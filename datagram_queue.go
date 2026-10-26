@@ -1,7 +1,9 @@
 package quic
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/daeuniverse/quic-go/internal/utils"
@@ -15,6 +17,9 @@ const (
 	maxDatagramSendQueueLen = 32
 	maxDatagramRcvQueueLen  = 128
 )
+
+// ErrDatagramQueueFull means nonblocking admission accepted no datagram.
+var ErrDatagramQueueFull = errors.New("QUIC DATAGRAM send queue full")
 
 // DatagramDropped, if set during program initialization, is called for every
 // DATAGRAM frame a connection discards: a received one its full receive queue
@@ -85,6 +90,25 @@ func (h *datagramQueue) Add(f *wire.DatagramFrame) error {
 		}
 		h.sendMx.Lock()
 	}
+}
+
+// TryAdd copies p only after admission; a full queue never retains the caller.
+func (h *datagramQueue) TryAdd(p []byte) error {
+	h.sendMx.Lock()
+	select {
+	case <-h.closed:
+		h.sendMx.Unlock()
+		return h.closeErr
+	default:
+	}
+	if h.sendQueue.Len() >= maxDatagramSendQueueLen {
+		h.sendMx.Unlock()
+		return ErrDatagramQueueFull
+	}
+	h.sendQueue.PushBack(&wire.DatagramFrame{DataLenPresent: true, Data: bytes.Clone(p)})
+	h.sendMx.Unlock()
+	h.hasData()
+	return nil
 }
 
 // Peek gets the next DATAGRAM frame for sending.
