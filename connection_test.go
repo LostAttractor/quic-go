@@ -1602,6 +1602,125 @@ func TestConnection0RTTTransportParameters(t *testing.T) {
 	}
 }
 
+func TestConnection0RTTConcurrentStreamOpening(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	cs := mocks.NewMockCryptoSetup(mockCtrl)
+	cs.EXPECT().ConnectionState().Return(handshake.ConnectionState{Used0RTT: true}).AnyTimes()
+	unpacker := NewMockUnpacker(mockCtrl)
+	tc := newClientTestConnection(t, mockCtrl, nil, true, connectionOptCryptoSetup(cs), connectionOptUnpacker(unpacker))
+	tc.sendConn.EXPECT().Write(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+
+	hdr := &wire.ExtendedHeader{
+		Header:          wire.Header{Type: protocol.PacketTypeHandshake, Version: protocol.Version1},
+		PacketNumberLen: protocol.PacketNumberLen2,
+	}
+	data, err := (&wire.CryptoFrame{Data: []byte("foobar")}).Append(nil, protocol.Version1)
+	require.NoError(t, err)
+
+	const numStreams = 200
+	restored := &wire.TransportParameters{
+		InitialMaxStreamDataBidiRemote: 1000,
+		InitialMaxStreamDataUni:        1000,
+		MaxBidiStreamNum:               numStreams,
+		MaxUniStreamNum:                numStreams,
+		MaxDatagramFrameSize:           1200,
+		DisableActiveMigration:         true,
+	}
+	received := *restored
+	received.OriginalDestinationConnectionID = tc.destConnID
+	received.InitialMaxStreamDataBidiRemote = 2000
+	received.InitialMaxStreamDataUni = 2000
+	received.EnableResetStreamAt = true
+
+	packedFirstPacket := make(chan struct{})
+	gomock.InOrder(
+		cs.EXPECT().StartHandshake(gomock.Any()),
+		cs.EXPECT().NextEvent().Return(handshake.Event{Kind: handshake.EventRestoredTransportParameters, TransportParameters: restored}),
+		cs.EXPECT().NextEvent().Return(handshake.Event{Kind: handshake.EventNoEvent}),
+		tc.packer.EXPECT().PackCoalescedPacket(false, gomock.Any(), gomock.Any(), protocol.Version1).DoAndReturn(
+			func(bool, protocol.ByteCount, monotime.Time, protocol.Version) (*coalescedPacket, error) {
+				close(packedFirstPacket)
+				return &coalescedPacket{buffer: getPacketBuffer(), longHdrPackets: []*longHeaderPacket{{header: hdr}}}, nil
+			},
+		),
+		cs.EXPECT().DiscardInitialKeys(),
+		unpacker.EXPECT().UnpackLongHeader(gomock.Any(), gomock.Any()).Return(
+			&unpackedPacket{hdr: hdr, encryptionLevel: protocol.EncryptionHandshake, data: data}, nil,
+		),
+		cs.EXPECT().HandleMessage([]byte("foobar"), protocol.EncryptionHandshake),
+		cs.EXPECT().NextEvent().Return(handshake.Event{Kind: handshake.EventReceivedTransportParameters, TransportParameters: &received}),
+		cs.EXPECT().NextEvent().Return(handshake.Event{Kind: handshake.EventHandshakeComplete}),
+		cs.EXPECT().NextEvent().Return(handshake.Event{Kind: handshake.EventNoEvent}),
+	)
+	tc.packer.EXPECT().PackCoalescedPacket(false, gomock.Any(), gomock.Any(), protocol.Version1).Return(nil, nil).AnyTimes()
+
+	errChan := make(chan error, 1)
+	go func() { errChan <- tc.conn.run() }()
+
+	select {
+	case <-packedFirstPacket:
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+	<-tc.conn.earlyConnReady()
+
+	// The opener must not synchronize with the run loop, so that the race detector
+	// sees stream creation concurrent with the server's transport parameters.
+	openErr := make(chan error, 1)
+	go func() {
+		for range numStreams {
+			if _, err := tc.conn.OpenStream(); err != nil {
+				openErr <- err
+				return
+			}
+			if _, err := tc.conn.OpenUniStream(); err != nil {
+				openErr <- err
+				return
+			}
+			assert.True(t, tc.conn.ConnectionState().SupportsDatagrams.Remote)
+			_, tooLarge := errors.AsType[*DatagramTooLargeError](tc.conn.SendDatagram(make([]byte, 2000)))
+			assert.True(t, tooLarge)
+			_, tooLarge = errors.AsType[*DatagramTooLargeError](tc.conn.TrySendDatagram(make([]byte, 2000)))
+			assert.True(t, tooLarge)
+			_, err := tc.conn.AddPath(nil)
+			assert.ErrorContains(t, err, "server disabled connection migration")
+		}
+		openErr <- nil
+	}()
+
+	p := getLongHeaderPacket(t, tc.remoteAddr, hdr, nil)
+	tc.conn.handlePacket(receivedPacket{data: p.data, buffer: p.buffer, rcvTime: monotime.Now()})
+
+	select {
+	case <-tc.conn.HandshakeComplete():
+	case <-tc.conn.Context().Done():
+		t.Fatal("connection context done")
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+	require.NoError(t, <-openErr)
+	// Streams opened before, during or after the update all end up with the server's window.
+	for _, str := range tc.conn.streamsMap.outgoingBidiStreams.streams {
+		require.Equal(t, received.InitialMaxStreamDataBidiRemote, str.sendStr.flowController.sendWindow)
+		require.True(t, supportsResetStreamAt(t, str))
+	}
+	for _, str := range tc.conn.streamsMap.outgoingUniStreams.streams {
+		require.Equal(t, received.InitialMaxStreamDataUni, str.flowController.sendWindow)
+		require.True(t, sendStreamSupportsResetStreamAt(t, str))
+	}
+
+	// test teardown
+	cs.EXPECT().Close()
+	tc.connRunner.EXPECT().Remove(gomock.Any()).AnyTimes()
+	tc.conn.destroy(nil)
+	select {
+	case err := <-errChan:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
 func TestConnectionReceivePrioritization(t *testing.T) {
 	for _, handshakeComplete := range []bool{true, false} {
 		t.Run(fmt.Sprintf("handshake complete: %t", handshakeComplete), func(t *testing.T) {
@@ -1892,7 +2011,7 @@ func TestConnectionInitialPacketSizeFallback(t *testing.T) {
 			require.Equal(t, uint32(estimateMaxPayloadSize(protocol.MinInitialPacketSize)), tc.conn.maxPayloadSizeEstimate.Load())
 			require.Zero(t, tc.conn.config.InitialPacketSize)
 
-			tc.conn.peerParams = &wire.TransportParameters{MaxUDPPayloadSize: 1300, ActiveConnectionIDLimit: 2}
+			tc.conn.peerParams.Store(&wire.TransportParameters{MaxUDPPayloadSize: 1300, ActiveConnectionIDLimit: 2})
 			tc.conn.applyTransportParameters()
 			require.Equal(t, protocol.ByteCount(protocol.MinInitialPacketSize), tc.conn.maxPacketSize())
 
