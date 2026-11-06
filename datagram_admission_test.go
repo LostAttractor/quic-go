@@ -16,9 +16,9 @@ import (
 func datagramAdmissionConn() *Conn {
 	c := &Conn{
 		version:       protocol.Version1,
-		peerParams:    &wire.TransportParameters{MaxDatagramFrameSize: 1200},
 		datagramQueue: newDatagramQueue(func() {}, utils.DefaultLogger, nil),
 	}
+	c.peerParams.Store(&wire.TransportParameters{MaxDatagramFrameSize: 1200})
 	c.maxPayloadSizeEstimate.Store(1200)
 	return c
 }
@@ -53,7 +53,7 @@ func TestTrySendDatagramChecksSizeAndNegotiation(t *testing.T) {
 	_, tooLarge := errors.AsType[*DatagramTooLargeError](c.TrySendDatagram(make([]byte, 1200)))
 	require.True(t, tooLarge)
 	require.Nil(t, c.datagramQueue.Peek())
-	c.peerParams.MaxDatagramFrameSize = 0
+	c.peerParams.Store(&wire.TransportParameters{})
 	require.Error(t, c.TrySendDatagram([]byte("disabled")))
 	require.Nil(t, c.datagramQueue.Peek())
 }

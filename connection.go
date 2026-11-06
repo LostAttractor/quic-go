@@ -211,7 +211,8 @@ type Conn struct {
 	// pacingDeadline is the time when the next packet should be sent
 	pacingDeadline monotime.Time
 
-	peerParams *wire.TransportParameters
+	// Immutable once published; early connections read this while the handshake is still running.
+	peerParams atomic.Pointer[wire.TransportParameters]
 
 	timer *time.Timer
 	// keepAlivePingSent stores whether a keep alive PING is in flight.
@@ -772,10 +773,6 @@ func (c *Conn) Context() context.Context {
 	return c.ctx
 }
 
-func (c *Conn) supportsDatagrams() bool {
-	return c.peerParams.MaxDatagramFrameSize > 0
-}
-
 // ConnectionState returns basic details about the QUIC connection.
 func (c *Conn) ConnectionState() ConnectionState {
 	c.connStateMutex.Lock()
@@ -784,9 +781,9 @@ func (c *Conn) ConnectionState() ConnectionState {
 	cs := c.cryptoStreamHandler.ConnectionState()
 	c.connState.TLS = cs.ConnectionState
 	c.connState.Used0RTT = cs.Used0RTT
-	if c.peerParams != nil {
-		c.connState.SupportsDatagrams.Remote = c.supportsDatagrams()
-		c.connState.SupportsStreamResetPartialDelivery.Remote = c.peerParams.EnableResetStreamAt
+	if params := c.peerParams.Load(); params != nil {
+		c.connState.SupportsDatagrams.Remote = params.MaxDatagramFrameSize > 0
+		c.connState.SupportsStreamResetPartialDelivery.Remote = params.EnableResetStreamAt
 	}
 	c.connState.SupportsDatagrams.Local = c.config.EnableDatagrams
 	c.connState.SupportsStreamResetPartialDelivery.Local = c.config.EnableStreamResetPartialDelivery
@@ -2359,7 +2356,7 @@ func (c *Conn) restoreTransportParameters(params *wire.TransportParameters) {
 		})
 	}
 
-	c.peerParams = params
+	c.peerParams.Store(params)
 	c.connIDGenerator.SetMaxActiveConnIDs(params.ActiveConnectionIDLimit)
 	c.connFlowController.UpdateSendWindow(params.InitialMaxData)
 	c.streamsMap.HandleTransportParameters(params)
@@ -2376,14 +2373,14 @@ func (c *Conn) handleTransportParameters(params *wire.TransportParameters) error
 		}
 	}
 
-	if c.perspective == protocol.PerspectiveClient && c.peerParams != nil && c.ConnectionState().Used0RTT && !params.ValidForUpdate(c.peerParams) {
+	if saved := c.peerParams.Load(); c.perspective == protocol.PerspectiveClient && saved != nil && c.ConnectionState().Used0RTT && !params.ValidForUpdate(saved) {
 		return &qerr.TransportError{
 			ErrorCode:    qerr.ProtocolViolation,
 			ErrorMessage: "server sent reduced limits after accepting 0-RTT data",
 		}
 	}
 
-	c.peerParams = params
+	c.peerParams.Store(params)
 	// On the client side we have to wait for handshake completion.
 	// During a 0-RTT connection, we are only allowed to use the new transport parameters for 1-RTT packets.
 	if c.perspective == protocol.PerspectiveServer {
@@ -2426,7 +2423,7 @@ func (c *Conn) checkTransportParameters(params *wire.TransportParameters) error 
 }
 
 func (c *Conn) applyTransportParameters() {
-	params := c.peerParams
+	params := c.peerParams.Load()
 	// Our local idle timeout will always be > 0.
 	c.idleTimeout = c.config.MaxIdleTimeout
 	// If the peer advertised an idle timeout, take the minimum of the values.
@@ -2453,10 +2450,11 @@ func (c *Conn) applyTransportParameters() {
 }
 
 func (c *Conn) maxMTU() protocol.ByteCount {
-	if c.peerParams == nil || c.peerParams.MaxUDPPayloadSize <= 0 {
+	params := c.peerParams.Load()
+	if params == nil || params.MaxUDPPayloadSize <= 0 {
 		return protocol.MaxPacketBufferSize
 	}
-	return min(protocol.MaxPacketBufferSize, c.peerParams.MaxUDPPayloadSize)
+	return min(protocol.MaxPacketBufferSize, params.MaxUDPPayloadSize)
 }
 
 func (c *Conn) triggerSending(now monotime.Time) error {
@@ -2909,7 +2907,7 @@ func (c *Conn) sendConnectionClose(e error) ([]byte, error) {
 }
 
 func (c *Conn) maxPacketSize() protocol.ByteCount {
-	if c.perspective == protocol.PerspectiveServer && c.peerParams == nil {
+	if c.perspective == protocol.PerspectiveServer && c.peerParams.Load() == nil {
 		// Use 1200-byte server packets until we've received the client's transport parameters.
 		return protocol.MinInitialPacketSize
 	}
@@ -2968,12 +2966,13 @@ func (c *Conn) OpenUniStreamSync(ctx context.Context) (*SendStream, error) {
 }
 
 func (c *Conn) newFlowController(id protocol.StreamID) *streamFlowController {
-	initialSendWindow := c.peerParams.InitialMaxStreamDataUni
+	params := c.peerParams.Load()
+	initialSendWindow := params.InitialMaxStreamDataUni
 	if protocol.StreamTypeOf(id) == protocol.StreamTypeBidi {
 		if protocol.StreamInitiator(id) == c.perspective {
-			initialSendWindow = c.peerParams.InitialMaxStreamDataBidiRemote
+			initialSendWindow = params.InitialMaxStreamDataBidiRemote
 		} else {
-			initialSendWindow = c.peerParams.InitialMaxStreamDataBidiLocal
+			initialSendWindow = params.InitialMaxStreamDataBidiLocal
 		}
 	}
 	return newStreamFlowController(
@@ -3099,13 +3098,14 @@ func (c *Conn) TrySendDatagram(p []byte) error {
 }
 
 func (c *Conn) checkDatagramSize(p []byte) error {
-	if !c.supportsDatagrams() {
+	params := c.peerParams.Load()
+	if params.MaxDatagramFrameSize <= 0 {
 		return errors.New("datagram support disabled")
 	}
 	f := wire.DatagramFrame{DataLenPresent: true}
 	// Keep the same conservative size estimate for both admission methods.
 	maxDataLen := min(
-		f.MaxDataLen(c.peerParams.MaxDatagramFrameSize, c.version),
+		f.MaxDataLen(params.MaxDatagramFrameSize, c.version),
 		protocol.ByteCount(c.maxPayloadSizeEstimate.Load()),
 	)
 	if protocol.ByteCount(len(p)) > maxDataLen {
@@ -3160,7 +3160,7 @@ func (c *Conn) AddPath(t *Transport) (*Path, error) {
 	if c.perspective == protocol.PerspectiveServer {
 		return nil, errors.New("server cannot initiate connection migration")
 	}
-	if c.peerParams.DisableActiveMigration {
+	if c.peerParams.Load().DisableActiveMigration {
 		return nil, errors.New("server disabled connection migration")
 	}
 	if err := t.init(false); err != nil {
